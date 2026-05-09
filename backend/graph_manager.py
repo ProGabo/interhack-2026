@@ -98,19 +98,28 @@ def load_dropoff_coords(path: Path | str = DEFAULT_COORDS_PATH) -> list[tuple[fl
 
 def _edge_colors(graph: nx.MultiDiGraph) -> list[str]:
     keywords = ("motorway", "trunk", "primary")
+    # Iterate with keys=True so the list aligns 1:1 with osmnx's internal
+    # edge ordering in MultiDiGraph plotting.
     return [
-        "#d62728" if any(k in str(data.get("highway", "")) for k in keywords) else "#888888"
-        for _, _, data in graph.edges(data=True)
+        "#d62728" if any(k in str(data.get("highway", "")) for k in keywords) else "#444444"
+        for _, _, _, data in graph.edges(keys=True, data=True)
     ]
 
 
-def plot_graph(graph: nx.MultiDiGraph) -> None:
-    """Show the graph with city streets in grey and the inter-city corridor in red."""
+def plot_graph(graph: nx.MultiDiGraph, save_path: Path | str | None = None) -> Path | None:
+    """Show the graph with city streets in grey and the inter-city corridor in red.
+
+    Always writes a PNG (default `cities_graph.png` next to this file) because the
+    interactive tkagg window can fail to render edges on some Windows setups —
+    the file is the source of truth.
+    """
     fig, ax = ox.plot_graph(
         graph,
+        figsize=(12, 12),
         edge_color=_edge_colors(graph),
-        edge_linewidth=0.7,
-        node_size=2,
+        edge_linewidth=1.2,
+        edge_alpha=1.0,
+        node_size=3,
         node_color="#1f77b4",
         bgcolor="white",
         show=False,
@@ -120,14 +129,18 @@ def plot_graph(graph: nx.MultiDiGraph) -> None:
         f"Granollers + Mollet del Vallès "
         f"({graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges)"
     )
+    out = Path(save_path) if save_path else Path(__file__).with_name("cities_graph.png")
+    fig.savefig(out, dpi=120, bbox_inches="tight")
     plt.show()
+    return out
 
 
 def plot_graph_with_dropoffs(
     graph: nx.MultiDiGraph,
     coords: list[tuple[float, float]],
     title: str | None = None,
-) -> None:
+    save_path: Path | str | None = None,
+) -> Path | None:
     """Overlay drop-off coordinates on the road graph.
 
     `coords` is a list of (lat, lng) pairs (matches `load_dropoff_coords`).
@@ -137,37 +150,51 @@ def plot_graph_with_dropoffs(
     """
     fig, ax = ox.plot_graph(
         graph,
+        figsize=(12, 12),
         edge_color=_edge_colors(graph),
-        edge_linewidth=0.7,
-        node_size=2,
+        edge_linewidth=1.2,
+        edge_alpha=1.0,
+        node_size=3,
         node_color="#1f77b4",
         bgcolor="white",
         show=False,
         close=False,
     )
-    lats = [c[0] for c in coords]
-    lngs = [c[1] for c in coords]
+    pad = 0.005
+    node_lngs = [graph.nodes[n]["x"] for n in graph.nodes()]
+    node_lats = [graph.nodes[n]["y"] for n in graph.nodes()]
+    xmin, xmax = min(node_lngs) - pad, max(node_lngs) + pad
+    ymin, ymax = min(node_lats) - pad, max(node_lats) + pad
+
+    inside = [(lat, lng) for lat, lng in coords if xmin <= lng <= xmax and ymin <= lat <= ymax]
+    outside_count = len(coords) - len(inside)
+    if outside_count:
+        print(
+            f"warning: {outside_count}/{len(coords)} drop-offs fall outside the "
+            f"graph extent and were cropped from the plot"
+        )
+
+    lats = [c[0] for c in inside]
+    lngs = [c[1] for c in inside]
     ax.scatter(
         lngs, lats,
         s=10, c="#2ca02c", alpha=0.7, zorder=5,
         edgecolors="white", linewidth=0.3,
-        label=f"{len(coords)} drop-offs",
+        label=f"{len(inside)} drop-offs (in extent)",
     )
 
-    pad = 0.005
-    node_lngs = [graph.nodes[n]["x"] for n in graph.nodes()]
-    node_lats = [graph.nodes[n]["y"] for n in graph.nodes()]
-    all_lngs = node_lngs + lngs
-    all_lats = node_lats + lats
-    ax.set_xlim(min(all_lngs) - pad, max(all_lngs) + pad)
-    ax.set_ylim(min(all_lats) - pad, max(all_lats) + pad)
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
     ax.legend(loc="upper right", framealpha=0.9)
     ax.set_title(
         title
         or f"Graph + {len(coords)} drop-offs "
            f"({graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges)"
     )
+    out = Path(save_path) if save_path else Path(__file__).with_name("cities_graph_dropoffs.png")
+    fig.savefig(out, dpi=120, bbox_inches="tight")
     plt.show()
+    return out
 
 
 if __name__ == "__main__":
@@ -179,6 +206,7 @@ if __name__ == "__main__":
     if DEFAULT_COORDS_PATH.exists():
         coords = load_dropoff_coords(DEFAULT_COORDS_PATH)
         print(f"Loaded {len(coords)} drop-off points from {DEFAULT_COORDS_PATH.name}")
-        plot_graph_with_dropoffs(g, coords)
+        png = plot_graph_with_dropoffs(g, coords)
     else:
-        plot_graph(g)
+        png = plot_graph(g)
+    print(f"Saved plot to {png}")
