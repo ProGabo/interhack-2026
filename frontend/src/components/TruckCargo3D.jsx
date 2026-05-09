@@ -1,65 +1,75 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import * as THREE from 'three'
 import { Canvas } from '@react-three/fiber'
 import { Edges, Html, OrbitControls } from '@react-three/drei'
+import { animate } from 'framer-motion'
 import mockRoute from '@shared/mock_5_stops.json'
 
 const GRID_COLUMNS = 2
 const GRID_LAYERS = 3
-const GRID_LENGTH = 8
+const GRID_LENGTH = 10
 const CELL = {
-  x: 1.32,
-  y: 0.92,
-  z: 1.1,
+  x: 1.3,
+  y: 0.9,
+  z: 1,
 }
 const GAP = {
-  x: 0.18,
-  y: 0.08,
-  z: 0.14,
+  x: 0.2,
+  y: 0.09,
+  z: 0.16,
 }
-const BED_THICKNESS = 0.26
-const BED_CLEARANCE = 0.32
+const BED_THICKNESS = 0.24
+const BED_CLEARANCE = 0.35
 
 // Easy swap point for backend algorithm output later.
-const LOAD_MANIFEST_MOCK = [
+const truckLoadManifestMock = [
   {
-    id: 'mock-1',
-    gridPosition: [0, 1, 0],
-    size: [1, 1, 1],
+    id: 'mock-active-1',
+    x: 0,
+    y: 1,
+    z: 0,
+    width: 1,
+    height: 1,
+    depth: 1,
     type: 'active',
-    status: 'active',
-    clientName: 'Client 1',
-    skuCount: 6,
-    product: 'CERVEZA 33CL',
+    label: '14 SKUs',
+    reason: "Stop 1: 14 SKUs placed at Left-Lateral-Floor for zero-climb access.",
   },
   {
-    id: 'mock-2',
-    gridPosition: [1, 1, 0],
-    size: [1, 2, 1],
+    id: 'mock-active-2',
+    x: 1,
+    y: 1,
+    z: 1,
+    width: 1,
+    height: 2,
+    depth: 1,
     type: 'active',
-    status: 'active',
-    clientName: 'Client 1',
-    skuCount: 6,
-    product: 'AGUA MIX',
+    label: '9 SKUs',
+    reason: "Stop 1: 9 SKUs stacked at Right-Lateral-Level 2 for ergonomic side unloading.",
   },
   {
-    id: 'mock-3',
-    gridPosition: [0, 0, 3],
-    size: [1, 1, 1],
+    id: 'mock-future-1',
+    x: 0,
+    y: 0,
+    z: 4,
+    width: 1,
+    height: 1,
+    depth: 1,
     type: 'future',
-    status: 'future',
-    clientName: 'Client 3',
-    skuCount: 4,
-    product: 'LATA 50CL',
+    label: '11 SKUs',
+    reason: 'Stop 2: Stacked on Level 2 to preserve floor space for heavy returnable kegs.',
   },
   {
-    id: 'mock-4',
-    gridPosition: [1, 0, 5],
-    size: [1, 1, 1],
+    id: 'mock-return-1',
+    x: 1,
+    y: 0,
+    z: 8,
+    width: 1,
+    height: 1,
+    depth: 1,
     type: 'returnable',
-    status: 'returnable',
-    clientName: 'Client 4',
-    skuCount: 2,
-    product: 'RETURNABLE CRATES',
+    label: '6 Return SKUs',
+    reason: 'Reverse Logistics: Reserved for empty crates and kegs on return pickup.',
   },
 ]
 
@@ -76,19 +86,16 @@ function hashString(value = '') {
   return Math.abs(hash)
 }
 
-function parseClientName(assignment = '', fallback = 'Current Client') {
-  const match = String(assignment).match(/\(([^)]+)\)/)
-  if (match?.[1]) return match[1]
-  return fallback
-}
-
 function normalizeCargoItems(cargo) {
   if (!Array.isArray(cargo)) return []
   return cargo.map((item, index) => ({
     ...item,
     row: Number(item?.position?.row ?? item?.row ?? item?.z ?? 0),
     col: Number(item?.position?.col ?? item?.col ?? item?.x ?? index),
-    product: item?.product ?? item?.label ?? null,
+    product: item?.product ?? item?.label ?? 'Mixed SKU',
+    label: item?.label ?? `${Number(item?.skuCount ?? item?.qty ?? item?.units ?? 8)} SKUs`,
+    reason: item?.reason ?? '',
+    skuCount: Number(item?.skuCount ?? item?.qty ?? item?.units ?? 8),
     type: item?.type ?? 'full',
   }))
 }
@@ -106,7 +113,7 @@ function getTypeFromManifestSlot(slot, progressStop) {
   return 'empty'
 }
 
-function buildVolumetricManifest({
+function buildTruckLoadManifest({
   manifest,
   cargo = [],
   progressStop = 0,
@@ -114,7 +121,7 @@ function buildVolumetricManifest({
   const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
 
   if (slots.length === 0) {
-    return LOAD_MANIFEST_MOCK
+    return truckLoadManifestMock
   }
 
   const byKey = new Map(
@@ -129,24 +136,32 @@ function buildVolumetricManifest({
 
       const keyHash = hashString(slot.key)
       const item = byKey.get(slot.key)
-      const sizeY = type === 'active'
-        ? ((keyHash % 3) === 0 ? 2 : 1)
-        : (type === 'future' ? 1 : 1)
-      const layerIndex = Math.min(
-        GRID_LAYERS - sizeY,
-        type === 'active' && sizeY === 1 ? 1 : 0,
+      const skuCount = Math.max(1, Number(slot?.skuCount ?? item?.skuCount ?? ((keyHash % 9) + 6)))
+      const height = type === 'active'
+        ? (skuCount >= 12 ? 2 : 1)
+        : 1
+      const y = Math.max(
+        0,
+        Math.min(
+          GRID_LAYERS - height,
+          type === 'active' && (keyHash % 4 === 0) ? 1 : 0,
+        ),
       )
-      const stopSequence = Number(slot?.upcomingSequence)
-      const clientFallback = Number.isFinite(stopSequence) ? `Stop ${stopSequence}` : 'Current Stop'
+      const label = slot?.label ?? item?.label ?? `${skuCount} SKUs`
+      const defaultReason = `Stop ${slot?.upcomingSequence ?? progressStop + 1}: ${label} placed at ${slot?.coordinate ?? 'lateral floor'} for side-curtain access.`
 
       return {
-        id: `${slot.key}-${index}`,
-        gridPosition: [slot.row, layerIndex, slot.col],
-        size: [1, sizeY, 1],
+        id: slot.key ?? `slot-${index}`,
+        x: Math.max(0, Math.min(GRID_COLUMNS - 1, Number(slot.row))),
+        y,
+        z: Math.max(0, Math.min(GRID_LENGTH - 1, Number(slot.col))),
+        width: 1,
+        height,
+        depth: 1,
         type,
-        status: type,
-        clientName: parseClientName(slot.assignment, clientFallback),
-        skuCount: Math.max(1, Math.round((keyHash % 6) + 2)),
+        label,
+        reason: String(slot?.reason ?? item?.reason ?? defaultReason),
+        skuCount,
         product: item?.product ?? slot?.product ?? 'Mixed SKU',
       }
     })
@@ -160,10 +175,14 @@ function getGridFootprint() {
   return { width, length, maxHeight }
 }
 
-function getBoxWorldPosition(gridPosition, size) {
+function getBoxWorldPosition(item) {
   const { width, length } = getGridFootprint()
-  const [gridX, gridY, gridZ] = gridPosition
-  const [sizeX, sizeY, sizeZ] = size
+  const gridX = Number(item?.x ?? 0)
+  const gridY = Number(item?.y ?? 0)
+  const gridZ = Number(item?.z ?? 0)
+  const sizeX = Number(item?.width ?? 1)
+  const sizeY = Number(item?.height ?? 1)
+  const sizeZ = Number(item?.depth ?? 1)
   const totalX = sizeX * CELL.x + (sizeX - 1) * GAP.x
   const totalY = sizeY * CELL.y + (sizeY - 1) * GAP.y
   const totalZ = sizeZ * CELL.z + (sizeZ - 1) * GAP.z
@@ -177,75 +196,150 @@ function getBoxWorldPosition(gridPosition, size) {
   return { x, y, z, totalX, totalY, totalZ }
 }
 
-function Wheel({ position }) {
+function Wheel({ position, scale = [1, 1, 1] }) {
   return (
-    <mesh position={position} rotation={[Math.PI / 2, 0, 0]} castShadow receiveShadow>
+    <mesh position={position} scale={scale} rotation={[Math.PI / 2, 0, 0]} castShadow receiveShadow>
       <cylinderGeometry args={[0.34, 0.34, 0.24, 28]} />
-      <meshStandardMaterial color="#111827" metalness={0.25} roughness={0.72} />
+      <meshStandardMaterial color="#0f172a" metalness={0.22} roughness={0.78} />
     </mesh>
   )
 }
 
 function TruckChassis() {
   const { width, length } = getGridFootprint()
-  const cabLength = 1.8
-  const cabWidth = Math.max(2.15, width + 0.45)
+  const cabLength = 1.2
+  const cabWidth = Math.max(2.25, width + 0.55)
+  const cabBaseZ = -(length / 2 + cabLength / 2 + 0.25)
 
   return (
     <group>
+      <mesh receiveShadow position={[0, BED_CLEARANCE - 0.25, -0.25]}>
+        <boxGeometry args={[width + 0.95, 0.28, length + 2.25]} />
+        <meshStandardMaterial color="#1f2937" metalness={0.34} roughness={0.56} />
+      </mesh>
+
       <mesh receiveShadow position={[0, BED_CLEARANCE, 0]}>
         <boxGeometry args={[width + 0.32, BED_THICKNESS, length + 0.32]} />
-        <meshStandardMaterial color="#1f2937" metalness={0.3} roughness={0.6} />
+        <meshStandardMaterial color="#475569" metalness={0.5} roughness={0.34} />
       </mesh>
 
       <mesh receiveShadow position={[0, BED_CLEARANCE - 0.22, 0]}>
         <boxGeometry args={[width + 0.82, 0.24, length + 0.62]} />
-        <meshStandardMaterial color="#111827" metalness={0.34} roughness={0.55} />
+        <meshStandardMaterial color="#1e293b" metalness={0.36} roughness={0.52} />
       </mesh>
 
-      <mesh castShadow receiveShadow position={[0, BED_CLEARANCE + 0.58, -(length / 2 + cabLength / 2)]}>
-        <boxGeometry args={[cabWidth, 1.25, cabLength]} />
-        <meshStandardMaterial color="#374151" metalness={0.22} roughness={0.45} />
+      <mesh castShadow receiveShadow position={[0, BED_CLEARANCE + 0.76, cabBaseZ]}>
+        <boxGeometry args={[cabWidth, 1.56, cabLength]} />
+        <meshStandardMaterial color="#e30613" metalness={0.26} roughness={0.38} />
       </mesh>
 
-      <mesh position={[0, BED_CLEARANCE + 0.75, -(length / 2 + cabLength / 2 + 0.45)]}>
-        <boxGeometry args={[cabWidth * 0.78, 0.45, 0.08]} />
-        <meshStandardMaterial color="#7dd3fc" transparent opacity={0.75} />
+      <mesh castShadow receiveShadow position={[0, BED_CLEARANCE + 1.63, cabBaseZ - 0.12]}>
+        <boxGeometry args={[cabWidth * 0.82, 0.36, cabLength * 0.82]} />
+        <meshStandardMaterial color="#dc2626" metalness={0.22} roughness={0.42} />
       </mesh>
 
-      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, -(length / 2 + 1.1)]} />
-      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, -(length / 2 + 1.1)]} />
-      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, -0.4]} />
-      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, -0.4]} />
-      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, length / 2 - 0.9]} />
-      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, length / 2 - 0.9]} />
+      <mesh position={[0, BED_CLEARANCE + 0.86, cabBaseZ - 0.63]}>
+        <boxGeometry args={[cabWidth * 0.76, 0.68, 0.08]} />
+        <meshStandardMaterial color="#dbeafe" transparent opacity={0.76} />
+      </mesh>
+
+      <mesh position={[-(cabWidth / 2 + 0.12), BED_CLEARANCE + 1.1, cabBaseZ - 0.08]}>
+        <boxGeometry args={[0.08, 0.42, 0.24]} />
+        <meshStandardMaterial color="#020617" metalness={0.18} roughness={0.7} />
+      </mesh>
+      <mesh position={[cabWidth / 2 + 0.12, BED_CLEARANCE + 1.1, cabBaseZ - 0.08]}>
+        <boxGeometry args={[0.08, 0.42, 0.24]} />
+        <meshStandardMaterial color="#020617" metalness={0.18} roughness={0.7} />
+      </mesh>
+
+      <mesh position={[-0.55, BED_CLEARANCE + 0.45, cabBaseZ - 0.92]}>
+        <boxGeometry args={[0.22, 0.12, 0.1]} />
+        <meshStandardMaterial color="#f8fafc" emissive="#e30613" emissiveIntensity={0.45} />
+      </mesh>
+      <mesh position={[0.55, BED_CLEARANCE + 0.45, cabBaseZ - 0.92]}>
+        <boxGeometry args={[0.22, 0.12, 0.1]} />
+        <meshStandardMaterial color="#f8fafc" emissive="#e30613" emissiveIntensity={0.45} />
+      </mesh>
+
+      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, -(length / 2 + 1.1)]} scale={[1, 1, 1]} />
+      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, -(length / 2 + 1.1)]} scale={[1, 1, 1]} />
+      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, -0.8]} scale={[1, 1, 1.02]} />
+      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, -0.8]} scale={[1, 1, 1.02]} />
+      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, 0.9]} scale={[1, 1, 1.05]} />
+      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, 0.9]} scale={[1, 1, 1.05]} />
     </group>
   )
 }
 
-function CargoBox({ item }) {
-  const { x, y, z, totalX, totalY, totalZ } = getBoxWorldPosition(item.gridPosition, item.size)
+function DashedWireframe({ totalX, totalY, totalZ }) {
+  const ref = useRef(null)
+  const geometry = useMemo(
+    () => new THREE.BoxGeometry(totalX + 0.03, totalY + 0.03, totalZ + 0.03),
+    [totalX, totalY, totalZ],
+  )
+
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.computeLineDistances()
+    }
+  }, [])
+
+  useEffect(() => () => geometry.dispose(), [geometry])
+
+  return (
+    <lineSegments ref={ref}>
+      <edgesGeometry args={[geometry]} />
+      <lineDashedMaterial color="#ffffff" dashSize={0.14} gapSize={0.1} />
+    </lineSegments>
+  )
+}
+
+function CargoBox({ item, shouldAnimate, animateToken }) {
+  const { x, y, z, totalX, totalY, totalZ } = getBoxWorldPosition(item)
+  const groupRef = useRef(null)
   const isReturnable = item.type === 'returnable'
   const isActive = item.type === 'active'
   const isFuture = item.type === 'future'
-  const isGoldenZone = (item.gridPosition[0] === 0 || item.gridPosition[0] === GRID_COLUMNS - 1)
-    && item.gridPosition[1] === 1
+  const isGoldenZone = (item.x === 0 || item.x === GRID_COLUMNS - 1) && item.y === 1
+
+  useEffect(() => {
+    if (!groupRef.current) return () => {}
+    if (!shouldAnimate) {
+      groupRef.current.scale.set(1, 1, 1)
+      groupRef.current.position.set(x, y, z)
+      return () => {}
+    }
+
+    groupRef.current.scale.set(0.82, 0.82, 0.82)
+    groupRef.current.position.set(x, y + 0.14, z)
+    const controls = animate(0, 1, {
+      duration: 0.34,
+      ease: 'easeOut',
+      onUpdate: (latest) => {
+        const scale = 0.82 + (latest * 0.18)
+        groupRef.current?.scale.set(scale, scale, scale)
+        groupRef.current?.position.set(x, y + ((1 - latest) * 0.14), z)
+      },
+    })
+    return () => controls.stop()
+  }, [shouldAnimate, animateToken, x, y, z])
 
   return (
-    <group position={[x, y, z]}>
+    <group ref={groupRef} position={[x, y, z]}>
       <mesh castShadow receiveShadow>
         <boxGeometry args={[totalX, totalY, totalZ]} />
         <meshStandardMaterial
-          color={isActive ? '#2563eb' : isFuture ? '#6b7280' : '#f8fafc'}
+          color={isActive ? '#2563eb' : isFuture ? '#64748b' : '#ffffff'}
           emissive={isActive ? '#1d4ed8' : '#0f172a'}
-          emissiveIntensity={isActive ? 0.22 : 0.04}
+          emissiveIntensity={isActive ? 0.18 : 0.03}
           transparent={!isActive}
-          opacity={isReturnable ? 0.08 : isFuture ? 0.45 : 1}
+          opacity={isReturnable ? 0.06 : isFuture ? 0.44 : 1}
           metalness={0.18}
           roughness={0.48}
         />
         {isReturnable ? <Edges threshold={15} color="#ffffff" /> : null}
       </mesh>
+      {isReturnable ? <DashedWireframe totalX={totalX} totalY={totalY} totalZ={totalZ} /> : null}
 
       {isGoldenZone && !isReturnable ? (
         <mesh>
@@ -253,9 +347,9 @@ function CargoBox({ item }) {
           <meshStandardMaterial
             color="#f59e0b"
             emissive="#f59e0b"
-            emissiveIntensity={0.25}
+            emissiveIntensity={0.3}
             transparent
-            opacity={0.12}
+            opacity={0.14}
             depthWrite={false}
           />
         </mesh>
@@ -264,24 +358,68 @@ function CargoBox({ item }) {
   )
 }
 
-function ActivePalletLabel({ item, skuCount }) {
-  const { x, y, z, totalY } = getBoxWorldPosition(item.gridPosition, item.size)
+function ActivePalletLabel({ item }) {
+  const { x, y, z, totalY } = getBoxWorldPosition(item)
+  const skuText = String(item?.label ?? `${item?.skuCount ?? 0} SKUs`)
+  const skuMatch = skuText.match(/(\d+)/)
+  const skuCount = skuMatch?.[1] ?? (item?.skuCount ?? 0)
   return (
     <Html position={[x, y + totalY / 2 + 0.55, z]} center distanceFactor={8.5}>
       <div className="active-pallet-label">
-        <p className="active-pallet-kicker">Active Stop</p>
-        <strong>{item.clientName}</strong>
-        <p>{skuCount} SKUs ready to unload</p>
+        <p className="active-pallet-kicker">Stop Active</p>
+        <strong>{`📦 ${skuCount} items for this stop`}</strong>
       </div>
     </Html>
   )
 }
 
-function CargoScene({ boxes }) {
+function FadingPoofBox({ item, animateToken }) {
+  const { x, y, z, totalX, totalY, totalZ } = getBoxWorldPosition(item)
+  const groupRef = useRef(null)
+  const materialRef = useRef(null)
+
+  useEffect(() => {
+    if (!groupRef.current || !materialRef.current) return () => {}
+    groupRef.current.scale.set(1, 1, 1)
+    materialRef.current.opacity = 0.3
+
+    const controls = animate(0, 1, {
+      duration: 0.38,
+      ease: 'easeOut',
+      onUpdate: (latest) => {
+        const scale = 1 - (latest * 0.35)
+        groupRef.current?.scale.set(scale, scale, scale)
+        groupRef.current?.position.set(x, y + (latest * 0.18), z)
+        if (materialRef.current) {
+          materialRef.current.opacity = 0.3 * (1 - latest)
+        }
+      },
+    })
+    return () => controls.stop()
+  }, [animateToken, x, y, z])
+
+  return (
+    <group ref={groupRef} position={[x, y, z]}>
+      <mesh>
+        <boxGeometry args={[totalX, totalY, totalZ]} />
+        <meshStandardMaterial
+          ref={materialRef}
+          color="#60a5fa"
+          emissive="#2563eb"
+          emissiveIntensity={0.25}
+          transparent
+          opacity={0.3}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  )
+}
+
+function CargoScene({ boxes, fadingBoxes = [], enableTransition, animateToken }) {
   const { width, length } = getGridFootprint()
   const activeBoxes = boxes.filter((item) => item.type === 'active')
   const leadActive = activeBoxes[0] ?? null
-  const skuCount = activeBoxes.reduce((sum, item) => sum + (item.skuCount ?? 1), 0)
 
   return (
     <>
@@ -290,8 +428,18 @@ function CargoScene({ boxes }) {
       <directionalLight intensity={0.45} position={[-5, 4, -6]} />
 
       <TruckChassis />
-      {boxes.map((item) => <CargoBox key={item.id} item={item} />)}
-      {leadActive ? <ActivePalletLabel item={leadActive} skuCount={skuCount} /> : null}
+      {boxes.map((item) => (
+        <CargoBox
+          key={enableTransition ? `${item.id}-${item.type}-${animateToken}` : item.id}
+          item={item}
+          shouldAnimate={enableTransition}
+          animateToken={animateToken}
+        />
+      ))}
+      {fadingBoxes.map((item) => (
+        <FadingPoofBox key={`poof-${item.id}-${animateToken}`} item={item} animateToken={animateToken} />
+      ))}
+      {leadActive ? <ActivePalletLabel item={leadActive} /> : null}
 
       <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, BED_CLEARANCE - 0.9, 0]}>
         <planeGeometry args={[width + 7.5, length + 7.5]} />
@@ -305,8 +453,6 @@ function CargoScene({ boxes }) {
         maxDistance={16}
         minPolarAngle={0.74}
         maxPolarAngle={1.22}
-        minAzimuthAngle={-0.95}
-        maxAzimuthAngle={0.95}
         target={[0, BED_CLEARANCE + 0.95, 0]}
       />
     </>
@@ -320,6 +466,8 @@ export default function TruckCargo3D({
   selectedStopIndex,
   manifest = null,
   progressStop = 0,
+  processTransitionTrigger = 0,
+  progressAction = 'sync',
 }) {
   const selectedMockStop =
     mockRoute?.stops?.find((stop, index) => {
@@ -337,11 +485,35 @@ export default function TruckCargo3D({
     : selectedMockStop?.cargo ?? []
 
   const selectedStopKey = selectedStopId ?? selectedMockStop?.stopId ?? `stop-${selectedStopIndex ?? 0}`
-  const volumetricBoxes = useMemo(
-    () => buildVolumetricManifest({ manifest, cargo: activeCargo, progressStop }),
+  const truckLoadManifest = useMemo(
+    () => buildTruckLoadManifest({ manifest, cargo: activeCargo, progressStop }),
     [manifest, activeCargo, progressStop],
   )
-  const reverseCount = volumetricBoxes.filter((box) => box.type === 'returnable').length
+  const previousManifestRef = useRef(truckLoadManifest)
+  const [fadingBoxes, setFadingBoxes] = useState([])
+  const reverseCount = truckLoadManifest.filter((box) => box.type === 'returnable').length
+  const shouldAnimateTransition = progressAction === 'process' && processTransitionTrigger > 0
+
+  useEffect(() => {
+    const previousManifest = previousManifestRef.current ?? []
+    const nextManifest = truckLoadManifest ?? []
+
+    if (shouldAnimateTransition) {
+      const previousById = new Map(previousManifest.map((item) => [item.id, item]))
+      const poofItems = nextManifest
+        .filter((item) => item.type === 'returnable' && previousById.get(item.id)?.type === 'active')
+        .map((item) => previousById.get(item.id))
+        .filter(Boolean)
+      setFadingBoxes(poofItems)
+      const timeoutId = setTimeout(() => setFadingBoxes([]), 420)
+      previousManifestRef.current = nextManifest
+      return () => clearTimeout(timeoutId)
+    }
+
+    previousManifestRef.current = nextManifest
+    setFadingBoxes([])
+    return () => {}
+  }, [truckLoadManifest, shouldAnimateTransition])
 
   return (
     <div className="truck-cargo-canvas volumetric-cargo-canvas" aria-label="Volumetric 3D truck cargo viewer">
@@ -351,8 +523,18 @@ export default function TruckCargo3D({
         camera={{ position: [7.1, 6.4, 8.1], fov: 43, near: 0.1, far: 120 }}
         gl={{ antialias: true, alpha: true }}
       >
-        <CargoScene boxes={volumetricBoxes} />
+        <CargoScene
+          boxes={truckLoadManifest}
+          fadingBoxes={fadingBoxes}
+          enableTransition={shouldAnimateTransition}
+          animateToken={processTransitionTrigger}
+        />
       </Canvas>
+      <div className="truck-compass" aria-label="Viewer orientation compass">
+        <span className="truck-compass-front">FRONT</span>
+        <span className="truck-compass-axis" />
+        <span className="truck-compass-rear">REAR</span>
+      </div>
       <div className="truck-visual-legend" aria-label="Truck slot legend">
         <div className="legend-item">
           <span className="legend-swatch legend-swatch-active" />

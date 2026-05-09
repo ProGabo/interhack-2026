@@ -22,9 +22,12 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
   const [progressStop, setProgressStop] = useState(
     selectedStopProgress || defaultProgressStop,
   )
+  const [processTransitionTrigger, setProcessTransitionTrigger] = useState(0)
+  const [progressAction, setProgressAction] = useState('sync')
 
   useEffect(() => {
     // Sync slider with map-selected stop, while still allowing manual slider override afterwards.
+    setProgressAction('sync')
     setProgressStop(selectedStopProgress)
   }, [safeStop?.stopId, safeStop?.index, selectedStopProgress])
 
@@ -126,9 +129,14 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
       <RouteProgressSlider
         progressStop={progressStop}
         totalStops={routeStops.length}
-        onProgressChange={setProgressStop}
+        onProgressChange={(nextStop) => {
+          setProgressAction('slider')
+          setProgressStop(nextStop)
+        }}
         onProcessStop={() => {
           if (!canProcessStop) return
+          setProgressAction('process')
+          setProcessTransitionTrigger((prev) => prev + 1)
           setProgressStop((prev) => Math.min(routeStops.length, prev + 1))
         }}
         canProcessStop={canProcessStop}
@@ -143,6 +151,8 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
           ghostZones={normalizedStop?.ghostZones ?? []}
           manifest={manifest}
           progressStop={progressStop}
+          processTransitionTrigger={processTransitionTrigger}
+          progressAction={progressAction}
         />
       </div>
 

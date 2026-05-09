@@ -376,6 +376,9 @@ export function buildSlotManifest({
         stopId: stop?.stopId ?? null,
         stopName: stop?.location?.address?.split(',')?.[0] ?? `Stop ${sequence}`,
         type: item?.type ?? 'full',
+        label: item?.label ?? `${toFiniteNumber(item?.skuCount ?? item?.qty ?? item?.units, 8)} SKUs`,
+        reason: item?.reason ?? null,
+        skuCount: toFiniteNumber(item?.skuCount ?? item?.qty ?? item?.units, 8),
         product: item?.product ?? item?.label ?? 'Mixed pallet',
         weightKg: toFiniteNumber(item?.weightKg ?? item?.weight, 0),
       })
@@ -405,16 +408,29 @@ export function buildSlotManifest({
       let access = getAccessLabel(col, maxCol)
       let upcomingSequence = null
       let product = null
+      let reason = ''
+      let label = 'Reserved slot'
+      let skuCount = 0
 
       if (upcoming) {
         status = 'active'
         upcomingSequence = upcoming.sequence
         product = upcoming.product
+        skuCount = toFiniteNumber(upcoming?.skuCount, 8)
+        label = upcoming?.label ?? `${skuCount} SKUs`
         const group = getProductGroupName(upcoming.product)
         assignment = `${group} - Stop ${upcoming.sequence} (${upcoming.stopName})`
+        const lateralNode = col === 0 ? 'left side' : col === maxCol ? 'right side' : 'middle lane'
+        reason = upcoming?.reason
+          ?? `Stop ${upcoming.sequence}: ${label} placed on the ${lateralNode} at waist-height for easy, fast reaching.`
       } else if (delivered.length > 0) {
         status = 'return_assigned'
         assignment = 'Empty Crate/Keg Return Buffer'
+        const returnLoad = delivered.at(-1)
+        skuCount = Math.max(1, toFiniteNumber(returnLoad?.skuCount, 4))
+        label = `${skuCount} Return SKUs`
+        reason = returnLoad?.reason
+          ?? 'Space reserved here for the empty crates you will pick up.'
       }
 
       slots.push({
@@ -429,6 +445,9 @@ export function buildSlotManifest({
         status,
         upcomingSequence,
         product,
+        reason,
+        label,
+        skuCount,
         stopSequences,
       })
     }
@@ -449,34 +468,41 @@ export function buildManifestExplainability({
 } = {}) {
   const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
   const currentSequence = Number(progressStop) + 1
-  const activeNow = slots.find(
+  const activeNow = slots.filter(
     (slot) => slot.status === 'active' && slot.upcomingSequence === currentSequence,
-  ) ?? slots.find((slot) => slot.status === 'active')
-  const centerCandidate = slots.find(
-    (slot) =>
-      slot.status === 'active' &&
-      slot.col > 0 &&
-      slot.col < Math.max(1, manifest.maxCol),
-  ) ?? activeNow
+  )
+  const activeSlots = activeNow.length > 0 ? activeNow : slots.filter((slot) => slot.status === 'active')
   const returnSlots = slots.filter((slot) => slot.status === 'return_assigned')
-  const goldenZoneLabel = activeNow?.col === 0
-    ? 'Left Curtain Golden Zone'
-    : activeNow?.col === manifest.maxCol
-      ? 'Right Curtain Golden Zone'
-      : 'Near-Lateral Golden Zone'
-  const efficiencyDelta = Math.max(
+  const lateralActive = activeSlots.filter(
+    (slot) => slot.col === 0 || slot.col === manifest.maxCol,
+  )
+  const goldenZonePercent = activeSlots.length > 0
+    ? Math.round((lateralActive.length / activeSlots.length) * 100)
+    : 80
+  const reasonLines = activeSlots
+    .map((slot) => slot.reason)
+    .filter((reason) => String(reason ?? '').trim().length > 0)
+    .slice(0, 2)
+  const reverseReason = returnSlots[0]?.reason
+    ?? 'Space reserved here for the empty crates you will pick up.'
+  const ergonomicsReason = `Placed on the side at waist-height for easy, fast reaching (${goldenZonePercent}% of the current load).`
+  const stabilityReason = 'Heavy items placed in the middle to keep the truck stable.'
+  const blockageReason = 'Placed at the back so it does not block later deliveries.'
+
+  if (reasonLines.length > 0) {
+    return [...reasonLines, blockageReason, stabilityReason, reverseReason, ergonomicsReason]
+  }
+
+  const fallbackEfficiency = Math.max(
     8,
     Math.round(toFiniteNumber(operationalKpis?.estimatedUnloadMinutesSaved, 10) * 0.9),
   )
-  const reverseCount = Math.max(
-    1,
-    Math.min(3, returnSlots.length || Math.round(toFiniteNumber(loadStats?.emptyReturnCount, 2))),
-  )
-
   return [
-    `Efficiency: ${efficiencyDelta}% faster unloading by placing SKU ${activeNow?.product ?? 'MIXED-SKU'} in the ${goldenZoneLabel}.`,
-    `Safety: Bulkier items anchored around ${centerCandidate?.coordinate ?? 'center bays'} for axle stability and a left/right load split near ${(100 - Math.round(toFiniteNumber(loadStats?.sideDiffRatio, 0) * 100))}% balance.`,
-    `Reverse Logistics: ${reverseCount} slots reserved for empty crates/kegs by Stop ${currentSequence}, preventing curtain blockage during pickup.`,
+    `Stop ${currentSequence}: ${fallbackEfficiency}% faster unloading because priority items are placed where they do not block later deliveries.`,
+    blockageReason,
+    stabilityReason,
+    reverseReason,
+    ergonomicsReason,
   ]
 }
 
