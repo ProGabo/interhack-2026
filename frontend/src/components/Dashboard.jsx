@@ -167,6 +167,9 @@ export default function Dashboard() {
       window: normalizedRoute?.windows?.[index] ?? null,
       serviceTime: normalizedRoute?.serviceTimes?.[index] ?? null,
       deliveryStatus: normalizedRoute?.deliveryStatus?.[index] ?? 'pending',
+      routeDeliveryStatus: normalizedRoute?.deliveryStatus ?? [],
+      routeStops: normalizedRoute?.stops ?? [],
+      routePoints: normalizedRoute?.points ?? [],
       stopData: mergedStopData,
       routeContext: route ?? mockRoute ?? null,
     })

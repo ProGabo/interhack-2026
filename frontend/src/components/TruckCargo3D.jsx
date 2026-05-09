@@ -50,6 +50,57 @@ const SLOT_STYLES = {
 const SLOT_SIZE = [1.55, 0.9, 1.05]
 const SLOT_GAP = { x: 0.32, z: 0.4 }
 
+function getSlotKey(row, col) {
+  return `${row}-${col}`
+}
+
+function clusterAdjacentGhostZones(zones = []) {
+  if (!Array.isArray(zones) || zones.length === 0) return []
+  const byKey = new Map(zones.map((zone) => [getSlotKey(zone.row, zone.col), zone]))
+  const visited = new Set()
+  const clusters = []
+
+  zones.forEach((zone) => {
+    const startKey = getSlotKey(zone.row, zone.col)
+    if (visited.has(startKey)) return
+    const queue = [zone]
+    const members = []
+    visited.add(startKey)
+
+    while (queue.length > 0) {
+      const current = queue.shift()
+      members.push(current)
+      const neighbors = [
+        [current.row - 1, current.col],
+        [current.row + 1, current.col],
+        [current.row, current.col - 1],
+        [current.row, current.col + 1],
+      ]
+      neighbors.forEach(([row, col]) => {
+        const neighborKey = getSlotKey(row, col)
+        if (visited.has(neighborKey)) return
+        const neighbor = byKey.get(neighborKey)
+        if (!neighbor) return
+        visited.add(neighborKey)
+        queue.push(neighbor)
+      })
+    }
+
+    const center = members.reduce(
+      (acc, member) => ({ row: acc.row + member.row, col: acc.col + member.col }),
+      { row: 0, col: 0 },
+    )
+    clusters.push({
+      id: `ghost-cluster-${zone.row}-${zone.col}`,
+      count: members.length,
+      row: center.row / members.length,
+      col: center.col / members.length,
+    })
+  })
+
+  return clusters
+}
+
 function getSlotStyle(type) {
   return SLOT_STYLES[type] ?? SLOT_STYLES.full
 }
@@ -230,11 +281,18 @@ function TruckFrame({ width, depth }) {
   )
 }
 
-function SlotMesh({ slot, position }) {
+function SlotMesh({ slot, position, slotState, alwaysShowLabel }) {
   const [isHovered, setIsHovered] = useState(false)
+  const [isPinned, setIsPinned] = useState(false)
   const style = getSlotStyle(slot?.type)
-  const productText = slot?.product ?? 'Free slot'
-  const showFullText = slot?.type === 'target_unload' || slot?.type === 'empty_return'
+  const productText = slotState?.status === 'return_assigned'
+    ? 'Empty Crate/Keg Return'
+    : slot?.product ?? 'Free slot'
+  const isDelivered = slotState?.status === 'delivered'
+  const isReturnAssigned = slotState?.status === 'return_assigned'
+  const materialOpacity = isDelivered ? 0.18 : style.opacity
+  const materialColor = isDelivered ? '#6b7280' : style.fill
+  const shouldShowLabel = alwaysShowLabel || isHovered || isPinned
 
   return (
     <group position={position}>
@@ -243,17 +301,18 @@ function SlotMesh({ slot, position }) {
         receiveShadow
         onPointerOver={() => setIsHovered(true)}
         onPointerOut={() => setIsHovered(false)}
+        onClick={() => setIsPinned((prev) => !prev)}
       >
         <boxGeometry args={SLOT_SIZE} />
         <meshStandardMaterial
-          color={style.fill}
+          color={materialColor}
           emissive={style.emissive}
           emissiveIntensity={style.emissiveIntensity}
           metalness={0.15}
           roughness={0.45}
-          transparent={style.transparent}
-          opacity={style.opacity}
-          wireframe={style.wireframe}
+          transparent={style.transparent || isDelivered || isReturnAssigned}
+          opacity={materialOpacity}
+          wireframe={style.wireframe || isReturnAssigned}
         />
       </mesh>
 
@@ -265,15 +324,58 @@ function SlotMesh({ slot, position }) {
         position={[0, SLOT_SIZE[1] / 2 + 0.28, 0]}
         zIndexRange={[20, 0]}
       >
-        <div className="truck-slot-badge-wrap">
-          {showFullText || isHovered ? (
+        {shouldShowLabel ? (
+          <div className="truck-slot-badge-wrap">
             <div className="truck-slot-badge" style={{ borderColor: style.border }}>
-              <p className="truck-slot-badge-title">{style.label}</p>
+              <p className="truck-slot-badge-title">
+                {alwaysShowLabel ? 'NEXT ACTION' : isDelivered ? 'DELIVERED' : isReturnAssigned ? 'RETURN SLOT' : style.label}
+              </p>
               <p className="truck-slot-badge-product">{productText}</p>
             </div>
-          ) : (
-            <div className="truck-slot-dot" style={{ backgroundColor: style.fill }} />
-          )}
+            <div className="truck-slot-line" />
+          </div>
+        ) : null}
+      </Html>
+    </group>
+  )
+}
+
+function GhostZoneMesh({ position }) {
+  return (
+    <group position={position}>
+      <mesh>
+        <boxGeometry args={[SLOT_SIZE[0] * 0.96, SLOT_SIZE[1] * 0.72, SLOT_SIZE[2] * 0.96]} />
+        <meshStandardMaterial
+          color="#9ca3af"
+          emissive="#6b7280"
+          emissiveIntensity={0.22}
+          transparent
+          opacity={0.28}
+          metalness={0.08}
+          roughness={0.62}
+          wireframe
+        />
+      </mesh>
+    </group>
+  )
+}
+
+function GhostZoneClusterLabel({ cluster, position }) {
+  return (
+    <group position={position}>
+      <Html
+        transform
+        sprite
+        occlude
+        distanceFactor={9.5}
+        position={[0, SLOT_SIZE[1] / 2 + 0.3, 0]}
+        zIndexRange={[18, 0]}
+      >
+        <div className="truck-slot-badge-wrap">
+          <div className="truck-slot-badge ghost-zone-badge" style={{ borderColor: '#9ca3af' }}>
+            <p className="truck-slot-badge-title">RETURN ZONE</p>
+            <p className="truck-slot-badge-product">{cluster.count} Slots</p>
+          </div>
           <div className="truck-slot-line" />
         </div>
       </Html>
@@ -281,7 +383,7 @@ function SlotMesh({ slot, position }) {
   )
 }
 
-function TruckCargoScene({ matrix }) {
+function TruckCargoScene({ matrix, ghostZones = [], slotStateMap = {} }) {
   const rowCount = matrix?.length ?? 0
   const colCount = matrix?.[0]?.length ?? 0
   const stepX = SLOT_SIZE[0] + SLOT_GAP.x
@@ -290,6 +392,19 @@ function TruckCargoScene({ matrix }) {
   const depth = Math.max(0, (rowCount - 1) * stepZ + SLOT_SIZE[2])
   const baseX = -((colCount - 1) * stepX) / 2
   const baseZ = -((rowCount - 1) * stepZ) / 2
+  const ghostClusters = useMemo(() => clusterAdjacentGhostZones(ghostZones), [ghostZones])
+  const nextActionKey = useMemo(() => {
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      for (let colIndex = 0; colIndex < colCount; colIndex += 1) {
+        const slot = matrix?.[rowIndex]?.[colIndex]
+        const state = slotStateMap?.[getSlotKey(rowIndex, colIndex)]
+        if (slot?.type === 'target_unload' && state?.status !== 'delivered') {
+          return getSlotKey(rowIndex, colIndex)
+        }
+      }
+    }
+    return null
+  }, [matrix, slotStateMap, rowCount, colCount])
 
   return (
     <>
@@ -310,10 +425,26 @@ function TruckCargoScene({ matrix }) {
           <SlotMesh
             key={`slot-${rowIndex}-${colIndex}-${slot?.type ?? 'free'}-${slot?.id ?? colIndex}`}
             slot={slot ?? { type: 'free', product: null }}
+            slotState={slotStateMap?.[getSlotKey(rowIndex, colIndex)] ?? null}
+            alwaysShowLabel={nextActionKey === getSlotKey(rowIndex, colIndex)}
             position={[baseX + colIndex * stepX, 0, baseZ + rowIndex * stepZ]}
           />
         )),
       )}
+
+      {ghostZones?.map((zone) => (
+        <GhostZoneMesh
+          key={zone?.id ?? `ghost-${zone?.row}-${zone?.col}`}
+          position={[baseX + zone.col * stepX, 0, baseZ + zone.row * stepZ]}
+        />
+      ))}
+      {ghostClusters?.map((cluster) => (
+        <GhostZoneClusterLabel
+          key={cluster.id}
+          cluster={cluster}
+          position={[baseX + cluster.col * stepX, 0, baseZ + cluster.row * stepZ]}
+        />
+      ))}
 
       <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.7, 0]}>
         <planeGeometry args={[width + 3, depth + 3]} />
@@ -332,7 +463,16 @@ function TruckCargoScene({ matrix }) {
   )
 }
 
-export default function TruckCargo3D({ stopData, matrix, pallets, cargo, selectedStopId, selectedStopIndex }) {
+export default function TruckCargo3D({
+  stopData,
+  matrix,
+  pallets,
+  cargo,
+  selectedStopId,
+  selectedStopIndex,
+  ghostZones = [],
+  manifest = null,
+}) {
   const selectedMockStop =
     mockRoute?.stops?.find((stop, index) => {
       if (selectedStopId && (stop?.stopId === selectedStopId || stop?.id === selectedStopId)) {
@@ -366,8 +506,13 @@ export default function TruckCargo3D({ stopData, matrix, pallets, cargo, selecte
     const sourcePallets = stopData?.pallets ?? pallets ?? []
     return matrixFromPallets(sourcePallets)
   }, [stopData, matrix, pallets, activeCargo])
-
-  console.log('3D PROPS:', activeCargo)
+  const slotStateMap = useMemo(() => {
+    const slots = manifest?.slots ?? []
+    return slots.reduce((acc, slot) => {
+      acc[`${slot.row}-${slot.col}`] = { status: slot.status }
+      return acc
+    }, {})
+  }, [manifest])
 
   return (
     <div className="truck-cargo-canvas">
@@ -377,8 +522,26 @@ export default function TruckCargo3D({ stopData, matrix, pallets, cargo, selecte
         camera={{ position: [6.4, 5.8, 6.9], fov: 42, near: 0.1, far: 100 }}
         gl={{ antialias: true, alpha: true }}
       >
-        <TruckCargoScene matrix={normalizedMatrix} />
+        <TruckCargoScene
+          matrix={normalizedMatrix}
+          ghostZones={ghostZones ?? stopData?.ghostZones ?? []}
+          slotStateMap={slotStateMap}
+        />
       </Canvas>
+      <div className="truck-visual-legend" aria-label="Truck slot legend">
+        <div className="legend-item">
+          <span className="legend-swatch legend-swatch-active" />
+          <span>Delivery for Active Stop</span>
+        </div>
+        <div className="legend-item">
+          <span className="legend-swatch legend-swatch-delivered" />
+          <span>Delivered / Empty</span>
+        </div>
+        <div className="legend-item">
+          <span className="legend-swatch legend-swatch-return" />
+          <span>Returnable / Ghost Slot</span>
+        </div>
+      </div>
     </div>
   )
 }
