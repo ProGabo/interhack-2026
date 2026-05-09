@@ -1,0 +1,66 @@
+{
+  "drivers": [
+    {
+      "id": "driver_001",
+      "password": "damm2026",
+      "truck_id": "T-01",
+      "points": [
+        { "lat": 41.4037, "lng": 2.1832, "address": "Carrer del Rosselló 515 (Damm HQ)" },
+        { "lat": 41.3948, "lng": 2.1609, "address": "Bar Calders, Carrer del Parlament 25" },
+        { "lat": 41.3878, "lng": 2.1699, "address": "Cervecería Catalana, Carrer de Mallorca 236" },
+        { "lat": 41.3854, "lng": 2.1977, "address": "Restaurant Mar, Port Olímpic" },
+        { "lat": 41.3792, "lng": 2.1774, "address": "Hotel Arts, Carrer de la Marina 19" }
+      ],
+      "windows": [
+        ["07:00", "08:30"],
+        ["09:00", "11:00"],
+        ["11:30", "13:00"],
+        ["14:00", "15:30"],
+        ["16:00", "18:00"]
+      ],
+      "service_times": [10, 25, 20, 35, 30]
+    },
+    {
+      "id": "driver_002",
+      "password": "damm2026",
+      "truck_id": "T-02",
+      "points": [
+        { "lat": 41.4037, "lng": 2.1832, "address": "Carrer del Rosselló 515 (Damm HQ)" },
+        { "lat": 41.4156, "lng": 2.1569, "address": "Bar El Dorado, Carrer de Verdi 45" },
+        { "lat": 41.4165, "lng": 2.2146, "address": "Rambla del Poblenou 60" },
+        { "lat": 41.4357, "lng": 2.1876, "address": "Bar La Bodegueta, Sant Andreu" },
+        { "lat": 41.4380, "lng": 2.1547, "address": "Supermercat Bonpreu, Carrer d'Horta 78" },
+        { "lat": 41.4037, "lng": 2.1832, "address": "Carrer del Rosselló 515 (Damm HQ)" }
+      ],
+      "windows": [
+        ["07:00", "08:30"],
+        ["09:00", "10:30"],
+        ["11:00", "12:30"],
+        ["13:30", "15:00"],
+        ["15:30", "17:00"],
+        ["17:30", "19:00"]
+      ],
+      "service_times": [10, 20, 30, 25, 40, 10]
+    },
+    {
+      "id": "driver_003",
+      "password": "damm2026",
+      "truck_id": "T-03",
+      "points": [
+        { "lat": 41.4037, "lng": 2.1832, "address": "Carrer del Rosselló 515 (Damm HQ)" },
+        { "lat": 41.3795, "lng": 2.1410, "address": "Bar Sants, Carrer de Sants 200" },
+        { "lat": 41.3809, "lng": 2.1228, "address": "Cervecería Camp Nou, Avinguda de Joan XXIII" },
+        { "lat": 41.4001, "lng": 2.1253, "address": "Bar Sarrià, Carrer Major de Sarrià 80" },
+        { "lat": 41.3714, "lng": 2.1577, "address": "Bar Paralelo, Avinguda del Paral·lel 120" }
+      ],
+      "windows": [
+        ["07:00", "08:30"],
+        ["09:30", "11:00"],
+        ["11:30", "13:30"],
+        ["14:30", "16:00"],
+        ["16:30", "18:30"]
+      ],
+      "service_times": [10, 20, 25, 15, 20]
+    }
+  ]
+}
