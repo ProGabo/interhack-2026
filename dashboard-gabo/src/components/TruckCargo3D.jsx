@@ -1,9 +1,12 @@
-import { Canvas } from "@react-three/fiber"
+import { useEffect, useMemo, useRef, useState } from "react"
+import * as THREE from "three"
+import { Canvas, useFrame } from "@react-three/fiber"
 import { Html, OrbitControls } from "@react-three/drei"
 
 const SLOT_STYLES = {
   target_unload: {
     fill: "#facc15",
+    border: "#facc15",
     emissive: "#f59e0b",
     emissiveIntensity: 0.45,
     transparent: false,
@@ -13,6 +16,7 @@ const SLOT_STYLES = {
   },
   full: {
     fill: "#3b82f6",
+    border: "#60a5fa",
     emissive: "#1d4ed8",
     emissiveIntensity: 0.08,
     transparent: true,
@@ -22,6 +26,7 @@ const SLOT_STYLES = {
   },
   free: {
     fill: "#93c5fd",
+    border: "#7dd3fc",
     emissive: "#0f172a",
     emissiveIntensity: 0,
     transparent: true,
@@ -31,6 +36,7 @@ const SLOT_STYLES = {
   },
   empty_return: {
     fill: "#4b5563",
+    border: "#9ca3af",
     emissive: "#111827",
     emissiveIntensity: 0.05,
     transparent: false,
@@ -75,13 +81,25 @@ function TruckFrame({ width, depth }) {
   )
 }
 
-function SlotMesh({ slot, position }) {
+function SlotMesh({ slot, position, groupRef, hidden = false }) {
+  const [isHovered, setIsHovered] = useState(false)
   const style = getSlotStyle(slot.type)
-  const label = slot.product ?? style.label
+  const productText = slot.product ?? "Free slot"
+  const showFullText = slot.type === "target_unload" || slot.type === "empty_return"
+  const tooltipBorder = { borderColor: style.border }
+
+  if (hidden) {
+    return null
+  }
 
   return (
-    <group position={position}>
-      <mesh castShadow receiveShadow>
+    <group ref={groupRef} position={position}>
+      <mesh
+        castShadow
+        receiveShadow
+        onPointerOver={() => setIsHovered(true)}
+        onPointerOut={() => setIsHovered(false)}
+      >
         <boxGeometry args={SLOT_SIZE} />
         <meshStandardMaterial
           color={style.fill}
@@ -95,17 +113,45 @@ function SlotMesh({ slot, position }) {
         />
       </mesh>
 
-      <Html transform sprite distanceFactor={9.5} position={[0, SLOT_SIZE[1] / 2 + 0.28, 0]}>
-        <div className="rounded-md border border-slate-600/80 bg-slate-950/88 px-2 py-1 text-center shadow-xl backdrop-blur-sm">
-          <p className="max-w-36 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-200">{style.label}</p>
-          <p className="max-w-36 text-[11px] font-medium text-slate-100">{label}</p>
+      <Html
+        transform
+        sprite
+        occlude
+        distanceFactor={9.5}
+        position={[0, SLOT_SIZE[1] / 2 + 0.28, 0]}
+        zIndexRange={[20, 0]}
+      >
+        <div className="pointer-events-none flex flex-col items-center text-center">
+          {showFullText ? (
+            <div
+              className="max-w-44 rounded-md border bg-slate-900/95 px-3 py-1.5 text-xs leading-tight text-white opacity-100 shadow-[0_8px_20px_rgba(2,6,23,0.45)]"
+              style={tooltipBorder}
+            >
+              <p className="font-semibold uppercase tracking-[0.12em] text-white">{style.label}</p>
+              <p className="mt-0.5 text-[11px] font-medium text-white">{productText}</p>
+            </div>
+          ) : isHovered ? (
+            <div
+              className="max-w-40 rounded-md border bg-slate-900/95 px-3 py-1.5 text-xs leading-tight text-white opacity-100 shadow-[0_8px_20px_rgba(2,6,23,0.45)]"
+              style={tooltipBorder}
+            >
+              <p className="font-semibold uppercase tracking-[0.12em] text-white">{style.label}</p>
+              <p className="mt-0.5 text-[11px] font-medium text-white">{productText}</p>
+            </div>
+          ) : (
+            <div
+              className="h-2.5 w-2.5 rounded-full border border-slate-100/50 shadow-[0_0_4px_rgba(15,23,42,0.45)]"
+              style={{ backgroundColor: style.fill }}
+            />
+          )}
+          <div className="mt-1.5 h-4 w-px bg-slate-100/55" />
         </div>
       </Html>
     </group>
   )
 }
 
-function TruckCargoScene({ matrix }) {
+function TruckCargoScene({ matrix, isResolving, isResolved }) {
   const rowCount = matrix.length
   const colCount = matrix[0]?.length ?? 0
   const stepX = SLOT_SIZE[0] + SLOT_GAP.x
@@ -114,6 +160,112 @@ function TruckCargoScene({ matrix }) {
   const depth = Math.max(0, (rowCount - 1) * stepZ + SLOT_SIZE[2])
   const baseX = -((colCount - 1) * stepX) / 2
   const baseZ = -((rowCount - 1) * stepZ) / 2
+  const movingSlotRef = useRef(null)
+  const animationPhaseRef = useRef("idle")
+  const hasTriggeredRef = useRef(false)
+  const isAnimatingRef = useRef(false)
+
+  const sourceKey = useMemo(() => ({ row: 0, col: 3 }), [])
+  const targetKey = useMemo(() => ({ row: 1, col: 3 }), [])
+  const sourceSlot = matrix[sourceKey.row]?.[sourceKey.col]
+  const targetSlot = matrix[targetKey.row]?.[targetKey.col]
+  const canAnimate =
+    Boolean(sourceSlot) &&
+    Boolean(targetSlot) &&
+    sourceSlot.type === "full" &&
+    targetSlot.type === "free"
+
+  const sourcePosition = useMemo(
+    () => [baseX + sourceKey.col * stepX, 0, baseZ + sourceKey.row * stepZ],
+    [baseX, baseZ, sourceKey.col, sourceKey.row, stepX, stepZ],
+  )
+  const targetPosition = useMemo(
+    () => [baseX + targetKey.col * stepX, 0, baseZ + targetKey.row * stepZ],
+    [baseX, baseZ, targetKey.col, targetKey.row, stepX, stepZ],
+  )
+
+  useEffect(() => {
+    hasTriggeredRef.current = false
+    isAnimatingRef.current = false
+    animationPhaseRef.current = "idle"
+    if (movingSlotRef.current) {
+      movingSlotRef.current.position.set(sourcePosition[0], sourcePosition[1], sourcePosition[2])
+    }
+  }, [matrix, sourcePosition])
+
+  useEffect(() => {
+    if (!canAnimate) {
+      return
+    }
+
+    if (isResolving && !hasTriggeredRef.current) {
+      hasTriggeredRef.current = true
+      isAnimatingRef.current = true
+      animationPhaseRef.current = "lift"
+      if (movingSlotRef.current) {
+        movingSlotRef.current.position.set(sourcePosition[0], sourcePosition[1], sourcePosition[2])
+      }
+      return
+    }
+
+    if (!isResolving && !isResolved) {
+      hasTriggeredRef.current = false
+      isAnimatingRef.current = false
+      animationPhaseRef.current = "idle"
+      if (movingSlotRef.current) {
+        movingSlotRef.current.position.set(sourcePosition[0], sourcePosition[1], sourcePosition[2])
+      }
+      return
+    }
+
+    if (isResolved && !isAnimatingRef.current && movingSlotRef.current) {
+      movingSlotRef.current.position.set(targetPosition[0], 0, targetPosition[2])
+      animationPhaseRef.current = "complete"
+    }
+  }, [canAnimate, isResolving, isResolved, sourcePosition, targetPosition])
+
+  useFrame((_, delta) => {
+    if (!canAnimate || !isAnimatingRef.current || !movingSlotRef.current) {
+      return
+    }
+
+    const movingPosition = movingSlotRef.current.position
+    const smoothing = Math.min(1, delta * 5)
+
+    if (animationPhaseRef.current === "lift") {
+      movingPosition.x = THREE.MathUtils.lerp(movingPosition.x, sourcePosition[0], smoothing)
+      movingPosition.z = THREE.MathUtils.lerp(movingPosition.z, sourcePosition[2], smoothing)
+      movingPosition.y = THREE.MathUtils.lerp(movingPosition.y, 2, smoothing)
+
+      if (Math.abs(movingPosition.y - 2) < 0.03) {
+        animationPhaseRef.current = "translate"
+      }
+      return
+    }
+
+    if (animationPhaseRef.current === "translate") {
+      movingPosition.x = THREE.MathUtils.lerp(movingPosition.x, targetPosition[0], smoothing)
+      movingPosition.z = THREE.MathUtils.lerp(movingPosition.z, targetPosition[2], smoothing)
+      movingPosition.y = THREE.MathUtils.lerp(movingPosition.y, 2, smoothing)
+
+      if (Math.abs(movingPosition.x - targetPosition[0]) < 0.03 && Math.abs(movingPosition.z - targetPosition[2]) < 0.03) {
+        animationPhaseRef.current = "lower"
+      }
+      return
+    }
+
+    if (animationPhaseRef.current === "lower") {
+      movingPosition.x = THREE.MathUtils.lerp(movingPosition.x, targetPosition[0], smoothing)
+      movingPosition.z = THREE.MathUtils.lerp(movingPosition.z, targetPosition[2], smoothing)
+      movingPosition.y = THREE.MathUtils.lerp(movingPosition.y, 0, smoothing)
+
+      if (Math.abs(movingPosition.y) < 0.03) {
+        movingPosition.set(targetPosition[0], 0, targetPosition[2])
+        animationPhaseRef.current = "complete"
+        isAnimatingRef.current = false
+      }
+    }
+  })
 
   return (
     <>
@@ -135,8 +287,22 @@ function TruckCargoScene({ matrix }) {
             key={`slot-${rowIndex}-${colIndex}-${slot.type}-${slot.product ?? "empty"}`}
             slot={slot}
             position={[baseX + colIndex * stepX, 0, baseZ + rowIndex * stepZ]}
+            hidden={
+              canAnimate &&
+              ((isResolving || isResolved) && rowIndex === sourceKey.row && colIndex === sourceKey.col
+                ? true
+                : isResolved && rowIndex === targetKey.row && colIndex === targetKey.col)
+            }
           />
         )),
+      )}
+
+      {canAnimate && (isResolving || isResolved) && (
+        <SlotMesh
+          slot={sourceSlot}
+          position={sourcePosition}
+          groupRef={movingSlotRef}
+        />
       )}
 
       <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.7, 0]}>
@@ -156,7 +322,7 @@ function TruckCargoScene({ matrix }) {
   )
 }
 
-function TruckCargo3D({ matrix }) {
+function TruckCargo3D({ matrix, isResolving, isResolved }) {
   return (
     <div className="h-[460px] w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950/60">
       <Canvas
@@ -164,7 +330,7 @@ function TruckCargo3D({ matrix }) {
         camera={{ position: [6.8, 5.8, 6.4], fov: 42, near: 0.1, far: 100 }}
         gl={{ antialias: true, alpha: true }}
       >
-        <TruckCargoScene matrix={matrix} />
+        <TruckCargoScene matrix={matrix} isResolving={isResolving} isResolved={isResolved} />
       </Canvas>
     </div>
   )
