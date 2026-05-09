@@ -50,22 +50,36 @@ export async function createDriverAccount(driverId, password) {
 
 // Firestore schema:
 // routes/{driverId}
-//   driver_id:     string
-//   truck_id:      string
-//   points:        Array<{ lat: number, lng: number, address?: string }>  (ordered)
-//   windows:       Array<{ start: string, end: string }>  e.g. { start: "09:00", end: "11:00" }
-//   service_times: Array<number>  minutes expected to unload+deliver at each stop
-//   status:        "pending" | "active" | "completed"
+//   driver_id:       string
+//   truck_id:        string
+//   points:          Array<{ lat, lng, address? }>         ordered
+//   windows:         Array<{ start: string, end: string }> ordered
+//   service_times:   Array<number>                         minutes per stop
+//   delivery_status: Array<"pending"|"delivered">          ordered
+//   status:          "pending" | "active" | "completed"
 
-export async function setRoute(driverId, { truckId, points, windows, serviceTimes }) {
+export async function setRoute(driverId, { truckId, points, windows, serviceTimes, deliveryStatus }) {
   await setDoc(doc(db, "routes", driverId), {
     driver_id: driverId,
     truck_id: truckId,
     points,
     windows,
     service_times: serviceTimes,
+    delivery_status: deliveryStatus ?? new Array(points.length).fill("pending"),
     status: "pending",
   });
+}
+
+export async function markStopDelivered(driverId, statusArray) {
+  await updateDoc(doc(db, "routes", driverId), { delivery_status: statusArray });
+}
+
+export function subscribeToRoute(driverId, onChange, onError) {
+  return onSnapshot(
+    doc(db, "routes", driverId),
+    (snap) => onChange(snap.exists() ? snap.data() : null),
+    onError ?? ((err) => console.error("subscribeToRoute:", err))
+  );
 }
 
 export async function getRoute(driverId) {

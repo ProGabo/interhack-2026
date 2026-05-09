@@ -37,6 +37,7 @@ for driver in data["drivers"]:
         "points": driver["points"],
         "windows": driver["windows"],
         "service_times": driver["service_times"],
+        "delivery_status": ["pending"] * len(driver["points"]),
         "status": "pending",
     })
     print(f"  [db]   Route written for {driver_id}  ({len(driver['points'])} stops)")

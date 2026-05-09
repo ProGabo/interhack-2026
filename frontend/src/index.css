@@ -358,6 +358,8 @@ body {
 
 .stop-item:hover { background: rgba(196,18,48,0.04); }
 .stop-item:hover .stop-number { border-color: var(--red); background: rgba(196,18,48,0.15); }
+.stop-item.delivered { opacity: 0.45; }
+.stop-item.delivered .stop-number { border-color: rgba(107,114,128,0.4); color: var(--muted); }
 
 .stop-number {
   width: 22px;
@@ -487,6 +489,49 @@ body {
 
 .map-pin span { transform: rotate(45deg); }
 
+.map-pin.delivered {
+  background: #4B5563;
+  border-color: rgba(255,255,255,0.3);
+  box-shadow: none;
+  opacity: 0.55;
+}
+
+/* ── Deliver button ── */
+.btn-deliver {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.5px solid var(--red-border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  margin-top: 2px;
+}
+
+.btn-deliver:hover:not(.done) {
+  background: var(--red-dim);
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.btn-deliver.done {
+  background: rgba(34,197,94,0.12);
+  border-color: rgba(34,197,94,0.35);
+  color: #22C55E;
+  cursor: default;
+}
+
+.btn-deliver:disabled:not(.done) {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
 /* ── Sidebar empty/loading states ── */
 .sidebar-state {
   padding: 24px 20px;
@@ -552,14 +597,35 @@ body {
   z-index: 5;
 }
 
+.fleet-legend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
 .fleet-legend-title {
   font-size: 0.6rem;
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
-  margin-bottom: 10px;
 }
+
+.fleet-show-all {
+  background: transparent;
+  border: none;
+  font-family: var(--font);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--red-light);
+  cursor: pointer;
+  padding: 0;
+}
+
+.fleet-show-all:hover { text-decoration: underline; }
 
 .fleet-item {
   display: flex;
@@ -570,6 +636,10 @@ body {
 }
 
 .fleet-item:last-child { border-bottom: none; }
+
+.fleet-item.clickable { cursor: pointer; border-radius: 6px; margin: 0 -4px; padding: 6px 4px; }
+.fleet-item.clickable:hover { background: rgba(255,255,255,0.04); }
+.fleet-item.selected { background: rgba(196,18,48,0.08); }
 
 .fleet-color {
   width: 10px;

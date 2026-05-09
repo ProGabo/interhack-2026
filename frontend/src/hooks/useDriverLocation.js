@@ -15,10 +15,15 @@ export function useDriverLocation(driverId) {
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+        console.log('[GPS] position:', loc)
         setLocation(loc)
-        updateDoc(doc(db, 'routes', driverId), { location: loc }).catch(() => {})
+        updateDoc(doc(db, 'routes', driverId), { location: loc })
+          .catch((e) => console.error('[GPS] Firestore write failed:', e))
       },
-      (err) => setError(err.message),
+      (err) => {
+        console.error('[GPS] error:', err.code, err.message)
+        setError(err.message)
+      },
       { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
     )
 

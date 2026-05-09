@@ -1,74 +1,59 @@
-import { useEffect, useRef, useState } from 'react'
-// RouteDirections uses useMapsLibrary('routes') — same as the driver map
-import { Map, AdvancedMarker, useMap, useMapsLibrary } from '@vis.gl/react-google-maps'
+import React, { useEffect, useRef, useState } from 'react'
+import { Map, AdvancedMarker, useMap } from '@vis.gl/react-google-maps'
 import { useAuth } from '../context/AuthContext'
 import { subscribeToRoutes } from '../firebase'
+import { CompletedSegments, ActiveDirections } from './RouteRenderer'
 
 const COLORS = ['#C41230', '#2563EB', '#059669', '#D97706', '#7C3AED']
 
-function RouteDirections({ points, color }) {
-  const map = useMap()
-  const routesLib = useMapsLibrary('routes')
-  const rendererRef = useRef(null)
-
-  useEffect(() => {
-    if (!routesLib || !map) return
-    const renderer = new routesLib.DirectionsRenderer({
-      suppressMarkers: true,
-      polylineOptions: { strokeColor: color, strokeWeight: 4, strokeOpacity: 0.7 },
-    })
-    renderer.setMap(map)
-    rendererRef.current = renderer
-    return () => renderer.setMap(null)
-  }, [routesLib, map, color])
-
-  useEffect(() => {
-    if (!rendererRef.current || !routesLib || points.length < 2) return
-    const service = new routesLib.DirectionsService()
-    service.route(
-      {
-        origin: { lat: points[0].lat, lng: points[0].lng },
-        destination: { lat: points.at(-1).lat, lng: points.at(-1).lng },
-        waypoints: points.slice(1, -1).map((p) => ({ location: { lat: p.lat, lng: p.lng }, stopover: true })),
-        travelMode: 'DRIVING',
-      },
-      (result, status) => { if (status === 'OK') rendererRef.current?.setDirections(result) }
-    )
-  }, [routesLib, points])
-
-  return null
-}
 
 function BoundsFitter({ routes }) {
   const map = useMap()
+  const routeKey = routes.map((r) => r.driver_id).join(',')
 
   useEffect(() => {
     if (!map || !window.google || !routes.length) return
     const bounds = new window.google.maps.LatLngBounds()
     routes.forEach((r) => (r.points ?? []).forEach((p) => bounds.extend({ lat: p.lat, lng: p.lng })))
     if (!bounds.isEmpty()) map.fitBounds(bounds, 60)
-  }, [map, routes.length]) // eslint-disable-line
+  }, [map, routeKey]) // eslint-disable-line
 
   return null
 }
 
-function FleetLegend({ routes }) {
+function FleetLegend({ routes, selectedId, onSelect }) {
   return (
     <div className="fleet-legend">
-      <div className="fleet-legend-title">Fleet</div>
-      {routes.length === 0 && <div className="fleet-item" style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>Loading…</div>}
-      {routes.map((route, i) => (
-        <div className="fleet-item" key={route.driver_id}>
-          <span className="fleet-color" style={{ background: COLORS[i % COLORS.length] }} />
-          <div className="fleet-info">
-            <div className="fleet-driver">{route.driver_id}</div>
-            <div className="fleet-truck">{route.truck_id}</div>
+      <div className="fleet-legend-header">
+        <div className="fleet-legend-title">Fleet</div>
+        {selectedId && (
+          <button className="fleet-show-all" onClick={() => onSelect(null)}>
+            All trucks
+          </button>
+        )}
+      </div>
+      {routes.length === 0 && (
+        <div className="fleet-item" style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>Loading…</div>
+      )}
+      {routes.map((route, i) => {
+        const active = selectedId === route.driver_id
+        return (
+          <div
+            className={`fleet-item clickable${active ? ' selected' : ''}`}
+            key={route.driver_id}
+            onClick={() => onSelect(active ? null : route.driver_id)}
+          >
+            <span className="fleet-color" style={{ background: COLORS[i % COLORS.length] }} />
+            <div className="fleet-info">
+              <div className="fleet-driver">{route.driver_id}</div>
+              <div className="fleet-truck">{route.truck_id}</div>
+            </div>
+            <span className={`fleet-gps ${route.location ? 'active' : ''}`}>
+              {route.location ? 'LIVE' : '···'}
+            </span>
           </div>
-          <span className={`fleet-gps ${route.location ? 'active' : ''}`}>
-            {route.location ? 'LIVE' : '···'}
-          </span>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -84,11 +69,14 @@ function AdminMap({ routes }) {
     >
       <BoundsFitter routes={routes} />
       {routes.map((route, i) => (
-        <RouteDirections
-          key={route.driver_id}
-          points={route.points ?? []}
-          color={COLORS[i % COLORS.length]}
-        />
+        <React.Fragment key={route.driver_id}>
+          <CompletedSegments points={route.points ?? []} deliveryStatus={route.delivery_status} />
+          <ActiveDirections
+            points={route.points ?? []}
+            deliveryStatus={route.delivery_status}
+            color={COLORS[i % COLORS.length]}
+          />
+        </React.Fragment>
       ))}
 
       {routes.map((route, ri) =>
@@ -129,14 +117,18 @@ function AdminMap({ routes }) {
 export default function AdminDashboard() {
   const { logout } = useAuth()
   const [routes, setRoutes] = useState([])
+  const [selectedId, setSelectedId] = useState(null)
 
   useEffect(() => {
-    const unsub = subscribeToRoutes(
+    return subscribeToRoutes(
       setRoutes,
       (err) => console.error('Fleet subscription error:', err)
     )
-    return unsub
   }, [])
+
+  const visibleRoutes = selectedId
+    ? routes.filter((r) => r.driver_id === selectedId)
+    : routes
 
   return (
     <div className="dashboard">
@@ -147,14 +139,17 @@ export default function AdminDashboard() {
           <span className="admin-badge">Admin</span>
         </div>
         <div className="navbar-driver">
-          Fleet: <span>{routes.length} truck{routes.length !== 1 ? 's' : ''}</span>
+          {selectedId
+            ? <>Viewing: <span>{selectedId}</span></>
+            : <>Fleet: <span>{routes.length} truck{routes.length !== 1 ? 's' : ''}</span></>
+          }
         </div>
         <button className="btn-logout" onClick={logout}>Log out</button>
       </nav>
       <div className="dashboard-body">
         <main className="map-container">
-          <AdminMap routes={routes} />
-          <FleetLegend routes={routes} />
+          <AdminMap routes={visibleRoutes} />
+          <FleetLegend routes={routes} selectedId={selectedId} onSelect={setSelectedId} />
         </main>
       </div>
     </div>
