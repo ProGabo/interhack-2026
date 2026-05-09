@@ -156,6 +156,15 @@ export function buildOperationalKpis({
   const stopCount = Math.max(Array.isArray(deliveryStatus) ? deliveryStatus.length : 0, 1)
   const progressRatio = deliveredStops / stopCount
   const distancePenaltyKm = Math.max(0.8, Number((1 + progressRatio * 2.2).toFixed(1)))
+  const kmSavedVsManual = Number((distancePenaltyKm + 0.6).toFixed(1))
+  const estimatedUnloadMinutes = Math.max(
+    6,
+    Math.round(
+      toFiniteNumber(loadStats?.targetUnloadCount, 0) * 2.9 +
+      toFiniteNumber(loadStats?.emptyReturnCount, 0) * 1.4 +
+      5,
+    ),
+  )
   const estimatedUnloadMinutesSaved = Math.round(
     (toFiniteNumber(loadStats?.targetUnloadCount, 0) * 2.5) +
     (toFiniteNumber(loadStats?.emptyReturnCount, 0) * 1.1) +
@@ -166,6 +175,8 @@ export function buildOperationalKpis({
   return {
     totalDistanceKm: Number(totalDistanceKm.toFixed(1)),
     distancePenaltyKm,
+    kmSavedVsManual,
+    estimatedUnloadMinutes,
     estimatedUnloadMinutesSaved,
     occupancyPercent: toFiniteNumber(loadStats?.occupancyPercent, 0),
     co2ProjectionKg,
@@ -392,9 +403,13 @@ export function buildSlotManifest({
       let status = 'empty'
       let assignment = 'Reserved empty slot'
       let access = getAccessLabel(col, maxCol)
+      let upcomingSequence = null
+      let product = null
 
       if (upcoming) {
         status = 'active'
+        upcomingSequence = upcoming.sequence
+        product = upcoming.product
         const group = getProductGroupName(upcoming.product)
         assignment = `${group} - Stop ${upcoming.sequence} (${upcoming.stopName})`
       } else if (delivered.length > 0) {
@@ -412,6 +427,8 @@ export function buildSlotManifest({
         access,
         assignment,
         status,
+        upcomingSequence,
+        product,
         stopSequences,
       })
     }
@@ -427,42 +444,40 @@ export function buildSlotManifest({
 export function buildManifestExplainability({
   manifest = { slots: [] },
   progressStop = 0,
+  loadStats = {},
+  operationalKpis = {},
 } = {}) {
   const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
-  const leftActive = slots.find((slot) => slot.status === 'active' && slot.col === 0)
-  const rightActive = slots.find(
-    (slot) => slot.status === 'active' && slot.col === manifest.maxCol,
+  const currentSequence = Number(progressStop) + 1
+  const activeNow = slots.find(
+    (slot) => slot.status === 'active' && slot.upcomingSequence === currentSequence,
+  ) ?? slots.find((slot) => slot.status === 'active')
+  const centerCandidate = slots.find(
+    (slot) =>
+      slot.status === 'active' &&
+      slot.col > 0 &&
+      slot.col < Math.max(1, manifest.maxCol),
+  ) ?? activeNow
+  const returnSlots = slots.filter((slot) => slot.status === 'return_assigned')
+  const goldenZoneLabel = activeNow?.col === 0
+    ? 'Left Curtain Golden Zone'
+    : activeNow?.col === manifest.maxCol
+      ? 'Right Curtain Golden Zone'
+      : 'Near-Lateral Golden Zone'
+  const efficiencyDelta = Math.max(
+    8,
+    Math.round(toFiniteNumber(operationalKpis?.estimatedUnloadMinutesSaved, 10) * 0.9),
   )
-  const centerActive = slots.find(
-    (slot) => slot.status === 'active' && slot.col > 0 && slot.col < manifest.maxCol,
+  const reverseCount = Math.max(
+    1,
+    Math.min(3, returnSlots.length || Math.round(toFiniteNumber(loadStats?.emptyReturnCount, 2))),
   )
-  const returnSlots = slots.filter((slot) => slot.status === 'return_assigned').slice(0, 2)
-  const insights = []
 
-  if (leftActive) {
-    insights.push(
-      `${leftActive.coordinate} assigned to early-stop load to guarantee zero-movement lateral unloading via left curtain, saving around 10 driver minutes.`,
-    )
-  }
-  if (rightActive) {
-    insights.push(
-      `${rightActive.coordinate} balances opposite-side access so right curtain unloads avoid cross-truck handling.`,
-    )
-  }
-  if (centerActive) {
-    insights.push(
-      `Bulk references anchored in ${centerActive.coordinate} to stabilize axle load and speed up warehouse placement consistency.`,
-    )
-  }
-  if (returnSlots.length > 0) {
-    insights.push(
-      `At route progress stop ${progressStop}, ${returnSlots
-        .map((slot) => slot.coordinate)
-        .join(' + ')} switch into return buffers for empties without blocking next deliveries.`,
-    )
-  }
-
-  return insights
+  return [
+    `Efficiency: ${efficiencyDelta}% faster unloading by placing SKU ${activeNow?.product ?? 'MIXED-SKU'} in the ${goldenZoneLabel}.`,
+    `Safety: Bulkier items anchored around ${centerCandidate?.coordinate ?? 'center bays'} for axle stability and a left/right load split near ${(100 - Math.round(toFiniteNumber(loadStats?.sideDiffRatio, 0) * 100))}% balance.`,
+    `Reverse Logistics: ${reverseCount} slots reserved for empty crates/kegs by Stop ${currentSequence}, preventing curtain blockage during pickup.`,
+  ]
 }
 
 export { HEURISTIC_CONSTANTS, HANDLING_SECONDS_BY_TYPE }

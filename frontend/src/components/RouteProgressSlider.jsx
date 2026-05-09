@@ -2,6 +2,8 @@ export default function RouteProgressSlider({
   progressStop = 0,
   totalStops = 0,
   onProgressChange,
+  onProcessStop,
+  canProcessStop = true,
 }) {
   const safeTotalStops = Math.max(0, totalStops)
   const safeProgress = Math.max(0, Math.min(safeTotalStops, progressStop))
@@ -23,8 +25,18 @@ export default function RouteProgressSlider({
         value={safeProgress}
         onChange={(event) => onProgressChange?.(Number(event.target.value))}
       />
+      <div className="route-progress-actions">
+        <button
+          type="button"
+          className="btn-process-stop"
+          onClick={() => onProcessStop?.()}
+          disabled={!canProcessStop}
+        >
+          {canProcessStop ? 'Process Stop' : 'All Stops Processed'}
+        </button>
+      </div>
       <p className="route-progress-caption">
-        Slide to fade delivered full pallets and auto-assign return ghost slots.
+        Slide or process each stop to swap delivered pallets into reverse-logistics return slots.
       </p>
     </section>
   )

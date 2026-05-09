@@ -797,6 +797,35 @@ body {
   line-height: 1.2;
 }
 
+.truck-kpi-header {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.truck-kpi-card {
+  background: linear-gradient(180deg, rgba(18, 26, 40, 0.95), rgba(10, 14, 24, 0.95));
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.truck-kpi-label {
+  font-size: 0.54rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #93c5fd;
+}
+
+.truck-kpi-card strong {
+  font-size: 0.92rem;
+  color: #eff6ff;
+}
+
 .truck-stop-canvas-wrap {
   flex: 1;
   min-height: 320px;
@@ -842,6 +871,34 @@ body {
   font-size: 0.64rem;
   color: var(--muted-light);
   line-height: 1.45;
+}
+
+.route-progress-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-process-stop {
+  border: 1px solid rgba(96, 165, 250, 0.5);
+  background: linear-gradient(135deg, rgba(30, 64, 175, 0.4), rgba(59, 130, 246, 0.42));
+  color: #eff6ff;
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-family: var(--font);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.btn-process-stop:hover:not(:disabled) {
+  border-color: rgba(147, 197, 253, 0.75);
+}
+
+.btn-process-stop:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .slot-manifest-card {
@@ -951,6 +1008,169 @@ body {
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(2, 6, 23, 0.75));
 }
 
+.volumetric-cargo-canvas {
+  padding: 0;
+}
+
+.active-pallet-label {
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(96, 165, 250, 0.55);
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.45);
+  padding: 8px 10px;
+  min-width: 150px;
+  text-align: center;
+}
+
+.active-pallet-kicker {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #93c5fd;
+}
+
+.active-pallet-label strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: #f8fafc;
+}
+
+.active-pallet-label p {
+  margin-top: 3px;
+  font-size: 0.62rem;
+  color: #cbd5e1;
+}
+
+.smart-bed-canvas {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 10px;
+}
+
+.smart-bed-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.smart-bed-kicker {
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #93c5fd;
+}
+
+.smart-bed-head strong {
+  font-size: 0.8rem;
+  color: #f8fafc;
+}
+
+.smart-bed-stage {
+  position: relative;
+  margin: 0 auto;
+  max-width: 100%;
+}
+
+.smart-bed-curtain-label {
+  position: absolute;
+  top: 12px;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #bfdbfe;
+  text-shadow: 0 0 6px rgba(30, 64, 175, 0.45);
+}
+
+.smart-bed-curtain-left {
+  left: 20px;
+}
+
+.smart-bed-curtain-right {
+  right: 20px;
+}
+
+.smart-bed-lane-guide {
+  position: absolute;
+  top: 34px;
+  font-size: 0.54rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: #fcd34d;
+}
+
+.smart-bed-lane-guide-left {
+  left: 36px;
+}
+
+.smart-bed-lane-guide-right {
+  right: 36px;
+}
+
+.iso-slot {
+  position: absolute;
+  width: 120px;
+  height: 68px;
+}
+
+.iso-slot-top {
+  width: 120px;
+  height: 68px;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  border: 1px solid rgba(226, 232, 240, 0.55);
+  box-shadow: 0 8px 18px rgba(2, 6, 23, 0.45);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  text-align: center;
+  padding: 0 18px;
+}
+
+.iso-slot-tag {
+  font-size: 0.48rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #f8fafc;
+}
+
+.iso-slot-product {
+  font-size: 0.57rem;
+  line-height: 1.15;
+  color: #e2e8f0;
+}
+
+.iso-slot-active .iso-slot-top {
+  background: linear-gradient(180deg, #1d4ed8, #2563eb);
+}
+
+.iso-slot-future .iso-slot-top {
+  background: linear-gradient(180deg, #64748b, #475569);
+}
+
+.iso-slot-returnable .iso-slot-top {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(156, 163, 175, 0.95),
+      rgba(156, 163, 175, 0.95) 6px,
+      rgba(51, 65, 85, 0.95) 6px,
+      rgba(51, 65, 85, 0.95) 12px
+    );
+  border-style: dashed;
+}
+
+.iso-slot-empty .iso-slot-top {
+  background: rgba(51, 65, 85, 0.4);
+  border-style: dashed;
+}
+
 .truck-visual-legend {
   position: absolute;
   left: 10px;
@@ -986,8 +1206,8 @@ body {
   background: #3b82f6;
 }
 
-.legend-swatch-delivered {
-  background: rgba(148, 163, 184, 0.4);
+.legend-swatch-future {
+  background: #64748b;
 }
 
 .legend-swatch-return {
@@ -999,6 +1219,11 @@ body {
       rgba(30, 41, 59, 0.95) 3px,
       rgba(30, 41, 59, 0.95) 6px
     );
+}
+
+.legend-swatch-empty {
+  background: rgba(51, 65, 85, 0.45);
+  border-style: dashed;
 }
 
 .truck-slot-badge-wrap {
@@ -1056,6 +1281,10 @@ body {
   .truck-stop-drawer {
     width: min(520px, 52vw);
     min-width: 360px;
+  }
+
+  .truck-kpi-header {
+    grid-template-columns: 1fr;
   }
 }
 

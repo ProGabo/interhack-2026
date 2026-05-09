@@ -16,7 +16,7 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
   const deliveryStatusList = safeStop?.routeDeliveryStatus ?? []
   const selectedStopProgress = Math.max(
     0,
-    Math.min(routeStops.length, (safeStop?.index ?? -1) + 1),
+    Math.min(routeStops.length, safeStop?.index ?? 0),
   )
   const defaultProgressStop = deliveryStatusList.filter((status) => status === 'delivered').length
   const [progressStop, setProgressStop] = useState(
@@ -55,13 +55,25 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
     [routeStops, progressStop, normalizedStop],
   )
   const manifestInsights = useMemo(
-    () => buildManifestExplainability({ manifest, progressStop }),
-    [manifest, progressStop],
+    () =>
+      buildManifestExplainability({
+        manifest,
+        progressStop,
+        loadStats: normalizedStop?.loadStats ?? {},
+        operationalKpis: normalizedStop?.operationalKpis ?? {},
+      }),
+    [manifest, progressStop, normalizedStop],
   )
 
   const stopIndex = (safeStop?.index ?? 0) + 1
   const serviceTime = safeStop?.serviceTime ?? null
   const deliveryStatus = progressStop > (safeStop?.index ?? 0) ? 'delivered' : 'pending'
+  const operationalKpis = normalizedStop?.operationalKpis ?? {}
+  const canProcessStop = progressStop < routeStops.length
+  const displayedUnloadMinutes = operationalKpis?.estimatedUnloadMinutes
+    ?? operationalKpis?.estimatedUnloadMinutesSaved
+    ?? serviceTime
+    ?? 0
 
   if (!selectedStop) return null
 
@@ -96,10 +108,30 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
         </div>
       </div>
 
+      <section className="truck-kpi-header" aria-label="KPI Impact Header">
+        <article className="truck-kpi-card">
+          <p className="truck-kpi-label">Descàrrega Estimada</p>
+          <strong>{displayedUnloadMinutes} min</strong>
+        </article>
+        <article className="truck-kpi-card">
+          <p className="truck-kpi-label">Ocupació del Camió</p>
+          <strong>{operationalKpis?.occupancyPercent ?? 0}%</strong>
+        </article>
+        <article className="truck-kpi-card">
+          <p className="truck-kpi-label">Km Estalviats</p>
+          <strong>{operationalKpis?.kmSavedVsManual ?? operationalKpis?.distancePenaltyKm ?? 0} km</strong>
+        </article>
+      </section>
+
       <RouteProgressSlider
         progressStop={progressStop}
         totalStops={routeStops.length}
         onProgressChange={setProgressStop}
+        onProcessStop={() => {
+          if (!canProcessStop) return
+          setProgressStop((prev) => Math.min(routeStops.length, prev + 1))
+        }}
+        canProcessStop={canProcessStop}
       />
 
       <div className="truck-stop-canvas-wrap">
@@ -110,13 +142,14 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
           cargo={safeStop?.stopData?.cargo ?? normalizedStop?.pallets ?? []}
           ghostZones={normalizedStop?.ghostZones ?? []}
           manifest={manifest}
+          progressStop={progressStop}
         />
       </div>
 
       <ExplainabilityWidget
         className="explainability-widget explainability-widget-drawer"
-        title="Why These Slots Were Assigned"
-        kicker="Judge Explicability"
+        title="AI Load Reasoning"
+        kicker="Explicabilitat"
         insights={manifestInsights}
       />
       <SlotManifestGrid manifest={manifest} />
