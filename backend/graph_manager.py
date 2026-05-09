@@ -30,7 +30,7 @@ MAJOR_ROAD_FILTER = (
 
 DEFAULT_GRAPH_PATH = Path(__file__).with_name("cities_graph.graphml")
 DEFAULT_COORDS_PATH = Path(__file__).with_name("coords.csv")
-DEFAULT_REQUEST_PATH = Path(__file__).with_name("data") / "sample_request.json"
+DEFAULT_REQUEST_PATH = Path(__file__).with_name("sample_request.json")
 
 
 def load_depot_coords(path: Path | str = DEFAULT_REQUEST_PATH) -> tuple[float, float] | None:
