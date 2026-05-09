@@ -25,10 +25,10 @@ from sklearn.preprocessing import StandardScaler
 
 from travel_time import TravelMatrix, get_or_build_matrix
 
-DATA_DIR = Path(__file__).with_name("data")
-DEFAULT_REQUEST = DATA_DIR / "sample_request.json"
-DEFAULT_PRODUCTS = DATA_DIR / "products.json"
-DEFAULT_VANS = DATA_DIR / "vans.json"
+_BASE = Path(__file__).parent
+DEFAULT_REQUEST = _BASE / "sample_request.json"
+DEFAULT_PRODUCTS = _BASE / "products.json"
+DEFAULT_VANS = _BASE / "vans.json"
 
 # Per-cell unload effort and a fixed parking/paperwork buffer (seconds).
 SERVICE_PER_CELL_S = 10.0
