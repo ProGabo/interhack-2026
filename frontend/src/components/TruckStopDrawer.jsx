@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { normalizeStopData } from '../adapters/normalizeStopData'
 import {
   buildManifestExplainability,
+  computeAccessibilityIndex,
   buildRouteProgressStatus,
   buildSlotManifest,
 } from '../adapters/operationalHeuristics'
@@ -9,6 +10,7 @@ import TruckCargo3D from './TruckCargo3D'
 import ExplainabilityWidget from './ExplainabilityWidget'
 import RouteProgressSlider from './RouteProgressSlider'
 import SlotManifestGrid from './SlotManifestGrid'
+import TruckStatusHeatmap from './TruckStatusHeatmap'
 
 export default function TruckStopDrawer({ selectedStop, onClose }) {
   const safeStop = selectedStop ?? {}
@@ -22,9 +24,12 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
   const [progressStop, setProgressStop] = useState(
     selectedStopProgress || defaultProgressStop,
   )
+  const [processTransitionTrigger, setProcessTransitionTrigger] = useState(0)
+  const [progressAction, setProgressAction] = useState('sync')
 
   useEffect(() => {
     // Sync slider with map-selected stop, while still allowing manual slider override afterwards.
+    setProgressAction('sync')
     setProgressStop(selectedStopProgress)
   }, [safeStop?.stopId, safeStop?.index, selectedStopProgress])
 
@@ -69,11 +74,16 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
   const serviceTime = safeStop?.serviceTime ?? null
   const deliveryStatus = progressStop > (safeStop?.index ?? 0) ? 'delivered' : 'pending'
   const operationalKpis = normalizedStop?.operationalKpis ?? {}
+  const accessibilityIndex = useMemo(
+    () => computeAccessibilityIndex({ manifest, progressStop }),
+    [manifest, progressStop],
+  )
   const canProcessStop = progressStop < routeStops.length
-  const displayedUnloadMinutes = operationalKpis?.estimatedUnloadMinutes
-    ?? operationalKpis?.estimatedUnloadMinutesSaved
+  const displayedTimeSaved = operationalKpis?.estimatedUnloadMinutesSaved
+    ?? operationalKpis?.estimatedUnloadMinutes
     ?? serviceTime
     ?? 0
+  const displayedCo2Saved = operationalKpis?.co2SavedKg ?? 0
 
   if (!selectedStop) return null
 
@@ -110,31 +120,41 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
 
       <section className="truck-kpi-header" aria-label="KPI Impact Header">
         <article className="truck-kpi-card">
-          <p className="truck-kpi-label">Descàrrega Estimada</p>
-          <strong>{displayedUnloadMinutes} min</strong>
+          <p className="truck-kpi-label">Time Saved</p>
+          <strong>{displayedTimeSaved} min</strong>
         </article>
         <article className="truck-kpi-card">
-          <p className="truck-kpi-label">Ocupació del Camió</p>
-          <strong>{operationalKpis?.occupancyPercent ?? 0}%</strong>
+          <p className="truck-kpi-label">CO2 Saved</p>
+          <strong>{displayedCo2Saved} kg</strong>
         </article>
         <article className="truck-kpi-card">
-          <p className="truck-kpi-label">Km Estalviats</p>
-          <strong>{operationalKpis?.kmSavedVsManual ?? operationalKpis?.distancePenaltyKm ?? 0} km</strong>
+          <p className="truck-kpi-label">Accessibility Index</p>
+          <strong>{accessibilityIndex}%</strong>
         </article>
       </section>
 
       <RouteProgressSlider
         progressStop={progressStop}
         totalStops={routeStops.length}
-        onProgressChange={setProgressStop}
+        onProgressChange={(nextStop) => {
+          setProgressAction('slider')
+          setProgressStop(nextStop)
+        }}
         onProcessStop={() => {
           if (!canProcessStop) return
+          setProgressAction('process')
+          setProcessTransitionTrigger((prev) => prev + 1)
           setProgressStop((prev) => Math.min(routeStops.length, prev + 1))
         }}
         canProcessStop={canProcessStop}
       />
 
       <div className="truck-stop-canvas-wrap">
+        <TruckStatusHeatmap
+          manifest={manifest}
+          progressStop={progressStop}
+          totalStops={routeStops.length}
+        />
         <TruckCargo3D
           stopData={normalizedStop}
           selectedStopId={safeStop?.stopId ?? normalizedStop?.stopId ?? null}
@@ -143,6 +163,8 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
           ghostZones={normalizedStop?.ghostZones ?? []}
           manifest={manifest}
           progressStop={progressStop}
+          processTransitionTrigger={processTransitionTrigger}
+          progressAction={progressAction}
         />
       </div>
 
