@@ -19,3 +19,7 @@ seed/service-account.json
 
 # Data Folders
 **/data/
+
+.claude
+
+**cache/

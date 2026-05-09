@@ -1,7 +1,7 @@
 import { Star } from "lucide-react"
 import TruckCargo3D from "./TruckCargo3D"
 
-function TruckGrid({ matrix }) {
+function TruckGrid({ matrix, isResolving, isResolved }) {
   return (
     <section className="grid-enter relative rounded-2xl border border-slate-800 bg-slate-950/65 p-3 shadow-2xl sm:p-4">
       <header className="mb-4 flex items-center justify-between gap-3">
@@ -43,7 +43,7 @@ function TruckGrid({ matrix }) {
               </p>
             </div>
 
-            <TruckCargo3D matrix={matrix} />
+            <TruckCargo3D matrix={matrix} isResolving={isResolving} isResolved={isResolved} />
           </div>
         </div>
 

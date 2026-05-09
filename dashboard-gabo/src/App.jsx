@@ -1,17 +1,51 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Truck } from "lucide-react"
 import HeaderKpis from "./components/HeaderKpis"
 import ErgonomicAlert from "./components/ErgonomicAlert"
 import TruckGrid from "./components/TruckGrid"
 import SimulationControls from "./components/SimulationControls"
-import { stopSnapshots } from "./data/stops"
+import { stopSnapshots } from "./data/seedAdapter"
 
 function App() {
   const [stopIndex, setStopIndex] = useState(0)
+  const [isResolving, setIsResolving] = useState(false)
+  const [isResolved, setIsResolved] = useState(false)
+  const [kpiAnimationKey, setKpiAnimationKey] = useState(1)
+  const resolveTimeoutRef = useRef(null)
   const currentStop = stopSnapshots[stopIndex]
-  const optimizedFriction = useMemo(() => (stopIndex === 0 ? 3 : 4), [stopIndex])
+  const baselineOptimizedFriction = useMemo(() => (stopIndex === 0 ? 3 : 4), [stopIndex])
+  const optimizedFriction = isResolved ? 3 : baselineOptimizedFriction
+
+  useEffect(() => {
+    return () => {
+      if (resolveTimeoutRef.current) {
+        clearTimeout(resolveTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  const handleAutoResolve = () => {
+    if (isResolving || isResolved) {
+      return
+    }
+
+    setKpiAnimationKey((prev) => prev + 1)
+    setIsResolving(true)
+    resolveTimeoutRef.current = setTimeout(() => {
+      setIsResolving(false)
+      setIsResolved(true)
+      resolveTimeoutRef.current = null
+    }, 2500)
+  }
 
   const handleNextStop = () => {
+    if (resolveTimeoutRef.current) {
+      clearTimeout(resolveTimeoutRef.current)
+      resolveTimeoutRef.current = null
+    }
+    setKpiAnimationKey((prev) => prev + 1)
+    setIsResolving(false)
+    setIsResolved(false)
     setStopIndex((prevIndex) => (prevIndex + 1) % stopSnapshots.length)
   }
 
@@ -37,11 +71,25 @@ function App() {
           </div>
         </header>
 
-        <HeaderKpis data={currentStop} />
-        <ErgonomicAlert data={currentStop} />
+        <HeaderKpis
+          data={currentStop}
+          optimizedFriction={optimizedFriction}
+          kpiAnimationKey={kpiAnimationKey}
+        />
+        <ErgonomicAlert
+          data={currentStop}
+          isResolving={isResolving}
+          isResolved={isResolved}
+          onAutoResolve={handleAutoResolve}
+        />
 
         <section className="grid gap-6 lg:grid-cols-[1fr_auto]">
-          <TruckGrid key={stopIndex} matrix={currentStop.truck_state.matrix} />
+          <TruckGrid
+            key={stopIndex}
+            matrix={currentStop.truck_state.matrix}
+            isResolving={isResolving}
+            isResolved={isResolved}
+          />
           <SimulationControls
             currentStop={currentStop.route_progress.current_stop}
             totalStops={currentStop.route_progress.total_stops}

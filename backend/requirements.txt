@@ -1,0 +1,7 @@
+osmnx>=2.0
+networkx>=3.0
+shapely>=2.0
+matplotlib>=3.7
+pydantic>=2.5
+numpy>=1.26
+scikit-learn>=1.2
