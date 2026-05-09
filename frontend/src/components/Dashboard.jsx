@@ -4,6 +4,7 @@ import { subscribeToRoute, markStopDelivered } from '../firebase'
 import { useDriverLocation } from '../hooks/useDriverLocation'
 import RouteMap from './Map'
 import VoiceAssistant from './VoiceAssistant'
+import TruckView from './TruckView'
 
 function buildGoogleMapsUrl(points) {
   if (!points || points.length < 2) return '#'
@@ -19,6 +20,7 @@ export default function Dashboard() {
   const [route, setRoute] = useState(null)
   const [deliveryStatus, setDeliveryStatus] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [showTruck, setShowTruck] = useState(false)
   const { location: currentLocation } = useDriverLocation(driverId)
 
   useEffect(() => {
@@ -117,6 +119,11 @@ export default function Dashboard() {
 
           {route && (
             <div className="sidebar-footer">
+              {route.pallets && (
+                <button className="btn-truck-view" onClick={() => setShowTruck(true)}>
+                  View truck interior
+                </button>
+              )}
               <a
                 className="btn-gmaps"
                 href={buildGoogleMapsUrl(route.points)}
@@ -128,6 +135,17 @@ export default function Dashboard() {
             </div>
           )}
         </aside>
+
+        {showTruck && route?.pallets && (
+          <TruckView
+            layout={route.truck_layout}
+            pallets={route.pallets}
+            deliveries={route.deliveries}
+            deliveryStatus={deliveryStatus}
+            truckId={route.truck_id}
+            onClose={() => setShowTruck(false)}
+          />
+        )}
 
         <main className="map-container">
           {loading ? (
