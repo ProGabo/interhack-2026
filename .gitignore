@@ -21,3 +21,5 @@ seed/service-account.json
 **/data/
 
 .claude
+
+**cache/
