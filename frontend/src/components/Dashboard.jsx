@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext'
 import { subscribeToRoute, markStopDelivered } from '../firebase'
 import { useDriverLocation } from '../hooks/useDriverLocation'
 import RouteMap from './Map'
+import VoiceAssistant from './VoiceAssistant'
 
 function buildGoogleMapsUrl(points) {
   if (!points || points.length < 2) return '#'
@@ -134,11 +135,19 @@ export default function Dashboard() {
           ) : !route ? (
             <div className="map-empty"><p>No route assigned for today.</p></div>
           ) : (
-            <RouteMap
-              points={route.points}
-              currentLocation={currentLocation}
-              deliveryStatus={deliveryStatus}
-            />
+            <>
+              <RouteMap
+                points={route.points}
+                currentLocation={currentLocation}
+                deliveryStatus={deliveryStatus}
+              />
+              <VoiceAssistant
+                route={route}
+                deliveryStatus={deliveryStatus}
+                canToggle={canToggle}
+                onMarkDelivered={handleToggleDelivered}
+              />
+            </>
           )}
         </main>
       </div>

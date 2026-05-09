@@ -539,6 +539,119 @@ body {
   color: var(--muted);
 }
 
+/* ── Voice Assistant ── */
+.voice-assistant {
+  position: absolute;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  z-index: 10;
+}
+
+.voice-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: var(--red);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 20px rgba(196,18,48,0.45), 0 2px 8px rgba(0,0,0,0.3);
+  transition: transform 0.15s, box-shadow 0.2s;
+  flex-shrink: 0;
+}
+
+.voice-btn:hover:not(:disabled) {
+  transform: scale(1.06);
+  box-shadow: 0 6px 28px rgba(196,18,48,0.55);
+}
+
+.voice-btn:disabled { cursor: default; }
+
+.voice-btn.listening {
+  background: var(--red-light);
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+.voice-btn.processing { background: #D97706; cursor: default; }
+.voice-btn.speaking   { background: #2563EB; cursor: default; }
+
+.voice-rec {
+  font-family: var(--font);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.voice-spin {
+  font-size: 1.2rem;
+  display: inline-block;
+  animation: voice-spin-anim 0.8s linear infinite;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(224,36,62,0.5); }
+  50%       { box-shadow: 0 0 0 14px rgba(224,36,62,0); }
+}
+
+@keyframes voice-spin-anim {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.voice-bubble {
+  background: rgba(17, 21, 30, 0.94);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 12px 12px 4px 12px;
+  padding: 12px 14px;
+  max-width: 260px;
+  min-width: 140px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+
+.voice-transcript {
+  font-size: 0.74rem;
+  color: var(--muted-light);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.voice-processing {
+  display: flex;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.vp-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--red);
+  animation: vp-bounce 1.2s ease-in-out infinite;
+}
+
+.vp-dot:nth-child(2) { animation-delay: 0.2s; }
+.vp-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes vp-bounce {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40%           { opacity: 1;   transform: scale(1);   }
+}
+
+.voice-reply {
+  font-size: 0.82rem;
+  color: var(--white);
+  line-height: 1.45;
+  margin-top: 6px;
+}
+
 /* ── Current location marker (driver view) ── */
 .current-location-marker {
   position: relative;
