@@ -53,8 +53,35 @@ function getSlotStyle(type) {
   return SLOT_STYLES[type] ?? SLOT_STYLES.full
 }
 
+function Wheel({ position, radius = 0.34, wheelWidth = 0.24 }) {
+  return (
+    <group position={position} rotation={[Math.PI / 2, 0, 0]}>
+      <mesh castShadow receiveShadow>
+        <cylinderGeometry args={[radius, radius, wheelWidth, 28]} />
+        <meshStandardMaterial color="#111111" metalness={0.08} roughness={0.85} />
+      </mesh>
+      <mesh>
+        <cylinderGeometry args={[radius * 0.52, radius * 0.52, wheelWidth + 0.02, 24]} />
+        <meshStandardMaterial color="#9ca3af" metalness={0.45} roughness={0.35} />
+      </mesh>
+    </group>
+  )
+}
+
 function TruckFrame({ width, depth }) {
   const frameHeight = 1.2
+  const cabWidth = THREE.MathUtils.clamp(depth * 0.8, 2, 3.3)
+  const cabFrontX = -(width / 2 + 1.45)
+  const cargoDeckLength = width + 1.15
+  const cargoDeckHalfLength = cargoDeckLength / 2
+  const cabBodyLength = 1.62
+  const cabFrontOverhang = Math.max(0, Math.abs(cabFrontX) + cabBodyLength / 2 - cargoDeckHalfLength)
+  const chassisLength = cargoDeckLength + cabFrontOverhang
+  const chassisCenterX = -cabFrontOverhang / 2
+  const wheelTrack = depth + 1
+  const frontAxleX = cabFrontX + 0.15
+  const rearAxle1X = width * 0.14
+  const rearAxle2X = width * 0.36
 
   return (
     <group>
@@ -63,20 +90,62 @@ function TruckFrame({ width, depth }) {
         <meshStandardMaterial color="#111827" metalness={0.2} roughness={0.8} />
       </mesh>
 
+      <mesh receiveShadow position={[chassisCenterX, -0.88, 0]}>
+        <boxGeometry args={[chassisLength, 0.22, depth + 1.05]} />
+        <meshStandardMaterial color="#1f2937" metalness={0.35} roughness={0.45} />
+      </mesh>
+
       <mesh position={[0, 0.24, -(depth / 2 + 0.52)]}>
         <boxGeometry args={[width + 1.05, frameHeight, 0.08]} />
-        <meshStandardMaterial color="#7f1d1d" metalness={0.25} roughness={0.55} />
-      </mesh>
-
-      <mesh position={[-(width / 2 + 0.52), 0.22, 0]}>
-        <boxGeometry args={[0.08, frameHeight, depth + 0.75]} />
         <meshStandardMaterial color="#9ca3af" metalness={0.2} roughness={0.55} />
       </mesh>
 
-      <mesh position={[width / 2 + 0.52, 0.22, 0]}>
-        <boxGeometry args={[0.08, frameHeight, depth + 0.75]} />
+      <mesh position={[0, 0.24, depth / 2 + 0.52]}>
+        <boxGeometry args={[width + 1.05, frameHeight, 0.08]} />
         <meshStandardMaterial color="#9ca3af" metalness={0.2} roughness={0.55} />
       </mesh>
+
+      <group position={[cabFrontX, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
+        <mesh castShadow receiveShadow position={[0.28, -0.22, 0]}>
+          <boxGeometry args={[cabWidth + 0.42, 0.34, 1.62]} />
+          <meshStandardMaterial color="#374151" metalness={0.3} roughness={0.48} />
+        </mesh>
+
+        <mesh castShadow receiveShadow position={[0, -0.18, 0]}>
+          <boxGeometry args={[cabWidth, 0.72, 1.5]} />
+          <meshStandardMaterial color="#1f2937" metalness={0.25} roughness={0.5} />
+        </mesh>
+
+        <mesh castShadow receiveShadow position={[0, 0.27, 0.16]}>
+          <boxGeometry args={[cabWidth * 0.9, 0.62, 1.02]} />
+          <meshStandardMaterial color="#334155" metalness={0.22} roughness={0.48} />
+        </mesh>
+
+        <mesh position={[0, 0.34, -0.33]}>
+          <boxGeometry args={[cabWidth * 0.84, 0.36, 0.08]} />
+          <meshStandardMaterial
+            color="#7dd3fc"
+            emissive="#0f172a"
+            emissiveIntensity={0.14}
+            metalness={0.1}
+            roughness={0.12}
+            transparent
+            opacity={0.7}
+          />
+        </mesh>
+
+        <mesh castShadow receiveShadow position={[-0.52, -0.36, -0.01]}>
+          <boxGeometry args={[0.06, 0.14, cabWidth * 0.72]} />
+          <meshStandardMaterial color="#9ca3af" metalness={0.28} roughness={0.42} />
+        </mesh>
+      </group>
+
+      <Wheel position={[frontAxleX, -1.16, wheelTrack / 2]} />
+      <Wheel position={[frontAxleX, -1.16, -wheelTrack / 2]} />
+      <Wheel position={[rearAxle1X, -1.16, wheelTrack / 2]} />
+      <Wheel position={[rearAxle1X, -1.16, -wheelTrack / 2]} />
+      <Wheel position={[rearAxle2X, -1.16, wheelTrack / 2]} />
+      <Wheel position={[rearAxle2X, -1.16, -wheelTrack / 2]} />
     </group>
   )
 }
@@ -277,7 +346,7 @@ function TruckCargoScene({ matrix, isResolving, isResolved }) {
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
       />
-      <directionalLight intensity={0.45} position={[-5, 3.8, -4.5]} />
+      <directionalLight intensity={0.58} position={[-5, 3.8, -4.5]} />
 
       <TruckFrame width={width} depth={depth} />
 
@@ -327,7 +396,7 @@ function TruckCargo3D({ matrix, isResolving, isResolved }) {
     <div className="h-[460px] w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950/60">
       <Canvas
         shadows
-        camera={{ position: [6.8, 5.8, 6.4], fov: 42, near: 0.1, far: 100 }}
+        camera={{ position: [6.4, 5.8, 6.9], fov: 42, near: 0.1, far: 100 }}
         gl={{ antialias: true, alpha: true }}
       >
         <TruckCargoScene matrix={matrix} isResolving={isResolving} isResolved={isResolved} />
