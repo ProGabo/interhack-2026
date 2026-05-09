@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { getRoute } from '../firebase'
+import { useDriverLocation } from '../hooks/useDriverLocation'
 import RouteMap from './Map'
 
 function buildGoogleMapsUrl(points) {
@@ -19,6 +20,7 @@ export default function Dashboard() {
   const { driverId, logout } = useAuth()
   const [route, setRoute] = useState(null)
   const [loading, setLoading] = useState(true)
+  const { location: currentLocation } = useDriverLocation(driverId)
 
   useEffect(() => {
     getRoute(driverId).then((data) => {
@@ -67,7 +69,7 @@ export default function Dashboard() {
                   {route.windows?.[i] && (
                     <div className="stop-meta">
                       <span className="meta-label">Window</span>
-                      {route.windows[i][0]} – {route.windows[i][1]}
+                      {route.windows[i].start} – {route.windows[i].end}
                     </div>
                   )}
                   {route.service_times?.[i] != null && (
@@ -108,7 +110,7 @@ export default function Dashboard() {
               <p>No route assigned for today.</p>
             </div>
           ) : (
-            <RouteMap points={route.points} />
+            <RouteMap points={route.points} currentLocation={currentLocation} />
           )}
         </main>
       </div>

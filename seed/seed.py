@@ -35,8 +35,19 @@ for driver in data["drivers"]:
         "driver_id": driver_id,
         "truck_id": driver["truck_id"],
         "points": driver["points"],
+        "windows": driver["windows"],
+        "service_times": driver["service_times"],
         "status": "pending",
     })
     print(f"  [db]   Route written for {driver_id}  ({len(driver['points'])} stops)")
+
+ADMIN_EMAIL = f"admin@{INTERNAL_DOMAIN}"
+ADMIN_PASSWORD = "dammadmin2026"
+try:
+    fb_auth.create_user(email=ADMIN_EMAIL, password=ADMIN_PASSWORD)
+    print(f"  [auth] Created admin account")
+except firebase_admin.exceptions.AlreadyExistsError:
+    print(f"  [auth] Admin account already exists")
+print(f"  Admin login → id: admin   password: {ADMIN_PASSWORD}")
 
 print("\nDone.")

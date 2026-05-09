@@ -4,6 +4,7 @@ import {
   collection,
   doc,
   setDoc,
+  updateDoc,
   getDocFromServer,
   getDocs,
   onSnapshot,
@@ -52,7 +53,7 @@ export async function createDriverAccount(driverId, password) {
 //   driver_id:     string
 //   truck_id:      string
 //   points:        Array<{ lat: number, lng: number, address?: string }>  (ordered)
-//   windows:       Array<[start: string, end: string]>  e.g. ["09:00", "11:00"]
+//   windows:       Array<{ start: string, end: string }>  e.g. { start: "09:00", end: "11:00" }
 //   service_times: Array<number>  minutes expected to unload+deliver at each stop
 //   status:        "pending" | "active" | "completed"
 
@@ -78,8 +79,10 @@ export async function getAllRoutes() {
 }
 
 // Real-time listener — calls onChange(routes[]) whenever Firestore updates
-export function subscribeToRoutes(onChange) {
-  return onSnapshot(collection(db, "routes"), (snap) => {
-    onChange(snap.docs.map((d) => d.data()));
-  });
+export function subscribeToRoutes(onChange, onError) {
+  return onSnapshot(
+    collection(db, "routes"),
+    (snap) => onChange(snap.docs.map((d) => d.data())),
+    onError ?? ((err) => console.error("subscribeToRoutes:", err))
+  );
 }

@@ -2,11 +2,9 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     match /routes/{driverId} {
-      // A driver can only read their own route
-      allow read: if request.auth != null
+      allow read: if request.auth != null;
+      allow update: if request.auth != null
         && request.auth.token.email == driverId + "@interhack.bcn";
-      // Only the backend (Admin SDK) can write
-      allow write: if false;
     }
   }
 }
