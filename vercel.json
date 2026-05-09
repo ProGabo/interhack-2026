@@ -1,10 +1,14 @@
 {
+    "version": 2,
     "experimentalServices": {
         "frontend": {
+            "rootDirectory": "interhack-frontend",
+            "framework": "vite",
             "routePrefix": "/"
         },
         "backend": {
-            "entrypoint": "backend",
+            "rootDirectory": "backend",
+            "entrypoint": "index.js",
             "routePrefix": "/_/backend"
         }
     }
