@@ -1,5 +1,5 @@
 import { Star } from "lucide-react"
-import TruckCell from "./TruckCell"
+import TruckCargo3D from "./TruckCargo3D"
 
 function TruckGrid({ matrix }) {
   return (
@@ -43,19 +43,7 @@ function TruckGrid({ matrix }) {
               </p>
             </div>
 
-            <div className="space-y-4">
-              {matrix.map((row, rowIndex) => (
-                <div
-                  key={`row-${rowIndex}`}
-                  className="grid gap-3"
-                  style={{ gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))` }}
-                >
-                  {row.map((slot, colIndex) => (
-                    <TruckCell key={`cell-${rowIndex}-${colIndex}-${slot.type}-${slot.product ?? "free"}`} slot={slot} />
-                  ))}
-                </div>
-              ))}
-            </div>
+            <TruckCargo3D matrix={matrix} />
           </div>
         </div>
 
