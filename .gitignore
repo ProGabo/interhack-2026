@@ -1,7 +1,21 @@
-venv/
-env/
+# Virtual Environments
+**/venv/
+**/.venv/
+**/env/
+**/.env/
+
+# Environment Secrets (Files)
 .env
+**/.env
+
+# Credentials
 seed/service-account.json
-node_modules/
-__pycache__/
-data/
+
+# Dependencies
+**/node_modules/
+
+# Python Cache
+**/__pycache__/
+
+# Data Folders
+**/data/
