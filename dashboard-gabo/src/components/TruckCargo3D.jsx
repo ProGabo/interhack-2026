@@ -53,6 +53,48 @@ function getSlotStyle(type) {
   return SLOT_STYLES[type] ?? SLOT_STYLES.full
 }
 
+function buildFallbackMatrix() {
+  return Array.from({ length: 2 }, (_, row) =>
+    Array.from({ length: 4 }, (_, col) => ({
+      id: `fallback-${row}-${col}`,
+      row,
+      col,
+      type: "free",
+      product: null,
+      weight: 0,
+    })),
+  )
+}
+
+function normalizeMatrixInput(matrix) {
+  if (!Array.isArray(matrix) || matrix.length === 0) {
+    return buildFallbackMatrix()
+  }
+
+  const colCount = Math.max(
+    1,
+    matrix.reduce((maxCols, row) => Math.max(maxCols, Array.isArray(row) ? row.length : 0), 0),
+  )
+
+  if (colCount === 0) {
+    return buildFallbackMatrix()
+  }
+
+  return matrix.map((row, rowIndex) =>
+    Array.from({ length: colCount }, (_, colIndex) => {
+      const slot = Array.isArray(row) ? row[colIndex] : null
+      return {
+        id: slot?.id ?? `slot-${rowIndex}-${colIndex}`,
+        row: rowIndex,
+        col: colIndex,
+        type: slot?.type ?? "free",
+        product: slot?.product ?? null,
+        weight: Number(slot?.weight ?? 0) || 0,
+      }
+    }),
+  )
+}
+
 function Wheel({ position, radius = 0.34, wheelWidth = 0.24 }) {
   return (
     <group position={position} rotation={[Math.PI / 2, 0, 0]}>
@@ -392,6 +434,8 @@ function TruckCargoScene({ matrix, isResolving, isResolved }) {
 }
 
 function TruckCargo3D({ matrix, isResolving, isResolved }) {
+  const safeMatrix = useMemo(() => normalizeMatrixInput(matrix), [matrix])
+
   return (
     <div className="h-[460px] w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-950/60">
       <Canvas
@@ -399,7 +443,7 @@ function TruckCargo3D({ matrix, isResolving, isResolved }) {
         camera={{ position: [6.4, 5.8, 6.9], fov: 42, near: 0.1, far: 100 }}
         gl={{ antialias: true, alpha: true }}
       >
-        <TruckCargoScene matrix={matrix} isResolving={isResolving} isResolved={isResolved} />
+        <TruckCargoScene matrix={safeMatrix} isResolving={isResolving} isResolved={isResolved} />
       </Canvas>
     </div>
   )

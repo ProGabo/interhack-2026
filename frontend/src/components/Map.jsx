@@ -13,7 +13,11 @@ function CurrentLocationMarker({ location }) {
   )
 }
 
-export default function RouteMap({ points, currentLocation, deliveryStatus }) {
+export default function RouteMap({ points, currentLocation, deliveryStatus, activeStopIndex, onSelectStop }) {
+  if (!Array.isArray(points) || points.length === 0) {
+    return null
+  }
+
   return (
     <Map
       mapId="DEMO_MAP_ID"
@@ -27,9 +31,15 @@ export default function RouteMap({ points, currentLocation, deliveryStatus }) {
 
       {points.map((point, i) => {
         const delivered = deliveryStatus?.[i] === 'delivered'
+        const isActive = activeStopIndex === i
         return (
-          <AdvancedMarker key={i} position={{ lat: point.lat, lng: point.lng }} title={point.address}>
-            <div className={`map-pin${delivered ? ' delivered' : ''}`}>
+          <AdvancedMarker
+            key={i}
+            position={{ lat: point.lat, lng: point.lng }}
+            title={point?.address ?? `Stop ${i + 1}`}
+            onClick={() => onSelectStop?.(i)}
+          >
+            <div className={`map-pin${delivered ? ' delivered' : ''}${isActive ? ' active' : ''}`}>
               <span>{i + 1}</span>
             </div>
           </AdvancedMarker>

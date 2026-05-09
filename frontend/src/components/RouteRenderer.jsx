@@ -11,7 +11,7 @@ export function CompletedSegments({ points, deliveryStatus }) {
     linesRef.current.forEach((l) => l.setMap(null))
     linesRef.current = []
 
-    if (!deliveryStatus) return
+    if (!deliveryStatus || !Array.isArray(points) || points.length < 2) return
 
     for (let i = 1; i < points.length; i++) {
       if (deliveryStatus[i] === 'delivered') {
@@ -42,7 +42,7 @@ export function ActiveDirections({ points, deliveryStatus, color }) {
   const routesLib = useMapsLibrary('routes')
 
   useEffect(() => {
-    if (!routesLib || !map) return
+    if (!routesLib || !map || !Array.isArray(points) || points.length < 2) return
 
     const renderer = new routesLib.DirectionsRenderer({
       suppressMarkers: true,

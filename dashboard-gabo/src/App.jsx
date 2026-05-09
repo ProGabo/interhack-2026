@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Truck } from "lucide-react"
 import HeaderKpis from "./components/HeaderKpis"
 import ErgonomicAlert from "./components/ErgonomicAlert"
 import TruckGrid from "./components/TruckGrid"
 import SimulationControls from "./components/SimulationControls"
-import { stopSnapshots } from "./data/seedAdapter"
+import { stopSnapshots, snapshotSource } from "./data/seedAdapter"
 
 function App() {
   const [stopIndex, setStopIndex] = useState(0)
@@ -12,9 +12,9 @@ function App() {
   const [isResolved, setIsResolved] = useState(false)
   const [kpiAnimationKey, setKpiAnimationKey] = useState(1)
   const resolveTimeoutRef = useRef(null)
-  const currentStop = stopSnapshots[stopIndex]
-  const baselineOptimizedFriction = useMemo(() => (stopIndex === 0 ? 3 : 4), [stopIndex])
-  const optimizedFriction = isResolved ? 3 : baselineOptimizedFriction
+  const hasStops = stopSnapshots.length > 0
+  const safeStopIndex = hasStops ? stopIndex % stopSnapshots.length : 0
+  const currentStop = hasStops ? stopSnapshots[safeStopIndex] : null
 
   useEffect(() => {
     return () => {
@@ -46,7 +46,10 @@ function App() {
     setKpiAnimationKey((prev) => prev + 1)
     setIsResolving(false)
     setIsResolved(false)
-    setStopIndex((prevIndex) => (prevIndex + 1) % stopSnapshots.length)
+    setStopIndex((prevIndex) => {
+      if (stopSnapshots.length === 0) return 0
+      return (prevIndex + 1) % stopSnapshots.length
+    })
   }
 
   return (
@@ -65,37 +68,46 @@ function App() {
                 </h1>
               </div>
             </div>
-            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-sm font-medium text-amber-200">
-              Current Friction: {currentStop.kpis.friction_score_10}/10 - Optimized Friction: {optimizedFriction}/10
-            </p>
+            <div className="flex flex-col items-end gap-2">
+              <p className="rounded-md border border-slate-700 bg-slate-900/70 px-2 py-1 text-[11px] uppercase tracking-wide text-slate-300">
+                Data source: {snapshotSource}
+              </p>
+            </div>
           </div>
         </header>
 
-        <HeaderKpis
-          data={currentStop}
-          optimizedFriction={optimizedFriction}
-          kpiAnimationKey={kpiAnimationKey}
-        />
-        <ErgonomicAlert
-          data={currentStop}
-          isResolving={isResolving}
-          isResolved={isResolved}
-          onAutoResolve={handleAutoResolve}
-        />
+        {!currentStop ? (
+          <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-8 text-center text-slate-300">
+            No stop snapshots available.
+          </section>
+        ) : (
+          <>
+            <HeaderKpis
+              data={currentStop}
+              kpiAnimationKey={kpiAnimationKey}
+            />
+            <ErgonomicAlert
+              data={currentStop}
+              isResolving={isResolving}
+              isResolved={isResolved}
+              onAutoResolve={handleAutoResolve}
+            />
 
-        <section className="grid gap-6 lg:grid-cols-[1fr_auto]">
-          <TruckGrid
-            key={stopIndex}
-            matrix={currentStop.truck_state.matrix}
-            isResolving={isResolving}
-            isResolved={isResolved}
-          />
-          <SimulationControls
-            currentStop={currentStop.route_progress.current_stop}
-            totalStops={currentStop.route_progress.total_stops}
-            onNextStop={handleNextStop}
-          />
-        </section>
+            <section className="grid gap-6 lg:grid-cols-[1fr_auto]">
+              <TruckGrid
+                key={safeStopIndex}
+                matrix={currentStop?.truck_state?.matrix ?? []}
+                isResolving={isResolving}
+                isResolved={isResolved}
+              />
+              <SimulationControls
+                currentStop={currentStop?.route_progress?.current_stop ?? 0}
+                totalStops={currentStop?.route_progress?.total_stops ?? 0}
+                onNextStop={handleNextStop}
+              />
+            </section>
+          </>
+        )}
       </div>
     </main>
   )
