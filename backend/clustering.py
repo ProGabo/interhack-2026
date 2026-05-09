@@ -128,12 +128,11 @@ def _line_cells(p: dict, qty: int) -> int:
     return p["length_cells"] * p["width_cells"] * p["height_cells"] * qty
 
 
-def load_problem(
-    request_path: Path | str = DEFAULT_REQUEST,
+def load_problem_from_dict(
+    req: dict,
     products_path: Path | str = DEFAULT_PRODUCTS,
     vans_path: Path | str = DEFAULT_VANS,
 ) -> tuple[Depot, Fleet, list[Driver], list[Stop]]:
-    req = json.loads(Path(request_path).read_text(encoding="utf-8"))
     products = _product_index(Path(products_path))
     van_spec = _van_type_spec(Path(vans_path), req["fleet"]["van_type"])
 
@@ -182,12 +181,27 @@ def load_problem(
     return depot, fleet, drivers, stops
 
 
+def load_problem(
+    request_path: Path | str = DEFAULT_REQUEST,
+    products_path: Path | str = DEFAULT_PRODUCTS,
+    vans_path: Path | str = DEFAULT_VANS,
+) -> tuple[Depot, Fleet, list[Driver], list[Stop]]:
+    req = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    return load_problem_from_dict(req, products_path, vans_path)
+
+
 # --- Travel matrix scoped to this request ---------------------------------
 
-def _matrix_for_problem(depot: Depot, stops: list[Stop]) -> TravelMatrix:
+def _matrix_for_problem(
+    depot: Depot,
+    stops: list[Stop],
+    use_disk_cache: bool = True,
+) -> TravelMatrix:
     points = [("DEPOT", depot.lat, depot.lng)] + [(s.id, s.lat, s.lng) for s in stops]
-    # Force rebuild scoped to these points; the cached 426-pt matrix won't
-    # contain the depot, so we always build a small one for the active request.
+    if not use_disk_cache:
+        from travel_time import build_matrix
+        from graph_manager import get_or_build_graph
+        return build_matrix(get_or_build_graph(), points)
     return get_or_build_matrix(points, path=Path(__file__).with_name("travel_time_request.npz"))
 
 
