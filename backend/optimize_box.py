@@ -50,6 +50,7 @@ class SmartTruckOptimizer3D:
         self.W = width_pallets
         self.H = height_layers
         self.route = list(route)
+        self._route_rank = {client: idx for idx, client in enumerate(self.route)}
 
         shapes = item_shapes if item_shapes is not None else {"keg": (1, 1, 1)}
         self.item_shapes = {}
@@ -234,6 +235,97 @@ class SmartTruckOptimizer3D:
                         return False
         return True
 
+    def _blocking_clients_in_region(self, truck, x_lo, x_hi, y_lo, y_hi, z_lo, z_hi, client):
+        blocked_by = set()
+        for x in range(x_lo, x_hi):
+            for y in range(y_lo, y_hi):
+                for z in range(z_lo, z_hi):
+                    value = truck[x, y, z]
+                    if value == 0 or value == self.EMPTY_KEG:
+                        continue
+                    blocker_client = self._instances[value].client
+                    if blocker_client != client:
+                        blocked_by.add(blocker_client)
+        return blocked_by
+
+    def _instance_accessibility_profile(self, truck, inst):
+        x0, y0, z0 = inst.anchor
+        lx, ly, lz = inst.shape
+        client = inst.client
+
+        top_open = (
+            z0 + lz >= self.H
+            or self._region_clear(truck, x0, x0 + lx, y0, y0 + ly, z0 + lz, self.H, client)
+        )
+        left_open = (
+            y0 == 0
+            or self._region_clear(truck, x0, x0 + lx, 0, y0, z0, z0 + lz, client)
+        )
+        right_open = (
+            y0 + ly >= self.W
+            or self._region_clear(truck, x0, x0 + lx, y0 + ly, self.W, z0, z0 + lz, client)
+        )
+
+        blockers = set()
+        blockers |= self._blocking_clients_in_region(
+            truck, x0, x0 + lx, y0, y0 + ly, z0 + lz, self.H, client
+        )
+        blockers |= self._blocking_clients_in_region(
+            truck, x0, x0 + lx, 0, y0, z0, z0 + lz, client
+        )
+        blockers |= self._blocking_clients_in_region(
+            truck, x0, x0 + lx, y0 + ly, self.W, z0, z0 + lz, client
+        )
+
+        later_blockers = sum(
+            1
+            for blocker in blockers
+            if self._route_rank.get(blocker, -1) > self._route_rank.get(client, -1)
+        )
+        lateral_open = left_open or right_open
+        any_open = top_open or lateral_open
+        edge_distance = min(y0, max(0, self.W - (y0 + ly)))
+
+        return {
+            "lateral_open": lateral_open,
+            "any_open": any_open,
+            "edge_distance": float(edge_distance),
+            "vertical_anchor": float(z0),
+            "later_blockers": later_blockers,
+        }
+
+    def _instance_accessibility_cost(self, truck, inst):
+        profile = self._instance_accessibility_profile(truck, inst)
+        penalty = 0.0
+        penalty += 0.45 * profile["edge_distance"]
+        penalty += 0.15 * profile["vertical_anchor"]
+        if not profile["lateral_open"]:
+            penalty += 2.0
+        if not profile["any_open"]:
+            penalty += 6.0
+        if profile["later_blockers"] > 0:
+            # High penalty when earlier stops are blocked by later-route cargo.
+            penalty += 9.0 * profile["later_blockers"]
+        return penalty
+
+    def accessibility_penalty(self, state):
+        """Soft accessibility objective evaluated through the full unloading cascade."""
+        truck = np.copy(state)
+        by_client = {c: [] for c in self.route}
+        for inst in self._instances.values():
+            if inst.client in by_client:
+                by_client[inst.client].append(inst)
+
+        total_penalty = 0.0
+        for client in self.route:
+            for inst in by_client[client]:
+                total_penalty += self._instance_accessibility_cost(truck, inst)
+            for inst in by_client[client]:
+                fill = self.EMPTY_KEG if inst.is_return else 0
+                for (x, y, z) in inst.cells:
+                    truck[x, y, z] = fill
+        return total_penalty
+
     # ---------- delta penalty ----------
 
     def _instances_reading_cells(self, changed_cells):
@@ -296,6 +388,27 @@ class SmartTruckOptimizer3D:
                 if z >= 1 and truck[x, y, z] > 0 and truck[x, y, z - 1] == 0:
                     penalty += 1
 
+        return penalty
+
+    def _evaluate_local_accessibility(self, state, affected_ids):
+        """
+        Accessibility contributions for instances that can change under this move.
+        """
+        truck = np.copy(state)
+        by_client = {c: [] for c in self.route}
+        for inst in self._instances.values():
+            if inst.client in by_client:
+                by_client[inst.client].append(inst)
+
+        penalty = 0.0
+        for client in self.route:
+            for inst in by_client[client]:
+                if inst.id in affected_ids:
+                    penalty += self._instance_accessibility_cost(truck, inst)
+            for inst in by_client[client]:
+                fill = self.EMPTY_KEG if inst.is_return else 0
+                for (x, y, z) in inst.cells:
+                    truck[x, y, z] = fill
         return penalty
 
     # ---------- work ----------
@@ -361,7 +474,7 @@ class SmartTruckOptimizer3D:
     # ---------- optimize ----------
 
     def optimize(self, initial_state, steps=40000, seed=None,
-                 T_0=1.0, T_min=1e-4, gamma_0=0.01, gamma_max=100.0):
+                 T_0=1.0, T_min=1e-4, gamma_0=0.01, gamma_max=100.0, beta_access=1.5):
         """
         SA with single-instance translation proposals + delta penalty evaluation.
 
@@ -376,8 +489,9 @@ class SmartTruckOptimizer3D:
         current_state = np.copy(initial_state)
         self._init_work_cache(current_state)
         current_P = self.physical_penalty(current_state)
+        current_A = self.accessibility_penalty(current_state)
         current_W = self._work_from_cache()
-        current_H = current_W + gamma_max * current_P
+        current_H = current_W + gamma_max * current_P + beta_access * current_A
 
         best_state = np.copy(current_state)
         best_H = current_H
@@ -418,6 +532,7 @@ class SmartTruckOptimizer3D:
 
             # Score before
             before_local = self._evaluate_local_penalty(current_state, changed_cells, affected_ids)
+            before_local_a = self._evaluate_local_accessibility(current_state, affected_ids)
 
             # Apply move
             for (x, y, z) in old_cells:
@@ -431,16 +546,20 @@ class SmartTruckOptimizer3D:
             # evaluated at the new position; affected_ids set doesn't change because it
             # already included this instance.)
             after_local = self._evaluate_local_penalty(current_state, changed_cells, affected_ids)
+            after_local_a = self._evaluate_local_accessibility(current_state, affected_ids)
             delta_P = after_local - before_local
+            delta_A = after_local_a - before_local_a
             proposed_P = current_P + delta_P
+            proposed_A = current_A + delta_A
             proposed_W = self._work_from_cache()
             delta_W = proposed_W - current_W
-            delta_H = delta_W + gamma * delta_P
+            delta_H = delta_W + gamma * delta_P + beta_access * delta_A
 
             if delta_H < 0 or random.random() < math.exp(-delta_H / max(T, 1e-12)):
                 current_P = proposed_P
+                current_A = proposed_A
                 current_W = proposed_W
-                current_H = current_W + gamma_max * current_P
+                current_H = current_W + gamma_max * current_P + beta_access * current_A
                 if current_H < best_H:
                     best_H = current_H
                     best_state = np.copy(current_state)

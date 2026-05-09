@@ -83,12 +83,14 @@
         "lng": 2.1609
       },
       "kpis": {
+        "time_saved_mins": 14,
         "friction_score_10": 8,
         "occupancy_percent": 84,
         "total_weight_kg": 4180,
         "ergonomic_alert": true,
         "alert_message": "Future-stop full pallet blocks side access for current unload.",
-        "prevented_rehandles": 4
+        "prevented_rehandles": 4,
+        "co2_reduction_kg": 1.6
       },
       "truck_state": {
         "truck_type": "8_pallets",
@@ -133,12 +135,14 @@
         "lng": 2.1699
       },
       "kpis": {
+        "time_saved_mins": 17,
         "friction_score_10": 7,
         "occupancy_percent": 79,
         "total_weight_kg": 3915,
         "ergonomic_alert": true,
         "alert_message": "Return barrels on outside lane force extra pallet movement.",
-        "prevented_rehandles": 3
+        "prevented_rehandles": 3,
+        "co2_reduction_kg": 1.2
       },
       "truck_state": {
         "truck_type": "8_pallets",
@@ -184,12 +188,14 @@
         "lng": 2.1977
       },
       "kpis": {
+        "time_saved_mins": 19,
         "friction_score_10": 6,
         "occupancy_percent": 74,
         "total_weight_kg": 3520,
         "ergonomic_alert": false,
         "alert_message": "No ergonomic blockers at this stop.",
-        "prevented_rehandles": 2
+        "prevented_rehandles": 2,
+        "co2_reduction_kg": 0.8
       },
       "truck_state": {
         "truck_type": "8_pallets",
@@ -235,12 +241,14 @@
         "lng": 2.1774
       },
       "kpis": {
+        "time_saved_mins": 21,
         "friction_score_10": 5,
         "occupancy_percent": 67,
         "total_weight_kg": 3090,
         "ergonomic_alert": false,
         "alert_message": "No ergonomic blockers at this stop.",
-        "prevented_rehandles": 2
+        "prevented_rehandles": 2,
+        "co2_reduction_kg": 0.8
       },
       "truck_state": {
         "truck_type": "8_pallets",
@@ -285,12 +293,14 @@
         "lng": 2.1832
       },
       "kpis": {
+        "time_saved_mins": 24,
         "friction_score_10": 4,
         "occupancy_percent": 52,
         "total_weight_kg": 2480,
         "ergonomic_alert": false,
         "alert_message": "No ergonomic blockers at this stop.",
-        "prevented_rehandles": 1
+        "prevented_rehandles": 1,
+        "co2_reduction_kg": 0.4
       },
       "truck_state": {
         "truck_type": "8_pallets",
