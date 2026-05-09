@@ -45,6 +45,8 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
       <div className="truck-stop-canvas-wrap">
         <TruckCargo3D
           stopData={normalizedStop}
+          selectedStopId={selectedStop?.stopId ?? normalizedStop?.stopId ?? null}
+          selectedStopIndex={selectedStop?.index ?? null}
           cargo={selectedStop?.stopData?.cargo ?? normalizedStop?.pallets ?? []}
         />
       </div>

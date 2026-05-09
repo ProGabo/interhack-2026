@@ -160,6 +160,7 @@ export default function Dashboard() {
 
     setSelectedStop({
       index,
+      stopId: mergedStopData?.stopId ?? mergedStopData?.id ?? unifiedStop?.stopId ?? null,
       point,
       truckId: normalizedRoute?.truckId ?? null,
       driverId,

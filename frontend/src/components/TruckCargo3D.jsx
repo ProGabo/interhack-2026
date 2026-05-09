@@ -332,17 +332,26 @@ function TruckCargoScene({ matrix }) {
   )
 }
 
-export default function TruckCargo3D({ stopData, matrix, pallets, cargo }) {
-  const HARD_CODE_OVERRIDE = true
+export default function TruckCargo3D({ stopData, matrix, pallets, cargo, selectedStopId, selectedStopIndex }) {
+  const selectedMockStop =
+    mockRoute?.stops?.find((stop, index) => {
+      if (selectedStopId && (stop?.stopId === selectedStopId || stop?.id === selectedStopId)) {
+        return true
+      }
+      if (Number.isInteger(selectedStopIndex) && selectedStopIndex >= 0) {
+        return index === selectedStopIndex
+      }
+      return false
+    }) ?? mockRoute?.stops?.[0] ?? null
 
-  const hardcodedCargo = mockRoute?.stops?.[0]?.cargo ?? []
+  const activeCargo = Array.isArray(cargo) && cargo.length > 0
+    ? cargo
+    : selectedMockStop?.cargo ?? []
+
+  const selectedStopKey = selectedStopId ?? selectedMockStop?.stopId ?? `stop-${selectedStopIndex ?? 0}`
   const normalizedMatrix = useMemo(() => {
-    if (HARD_CODE_OVERRIDE) {
-      return matrixFromPallets(normalizeCargoItems(hardcodedCargo))
-    }
-
-    if (Array.isArray(cargo) && cargo.length > 0) {
-      return matrixFromPallets(normalizeCargoItems(cargo))
+    if (Array.isArray(activeCargo) && activeCargo.length > 0) {
+      return matrixFromPallets(normalizeCargoItems(activeCargo))
     }
 
     const stopMatrix = stopData?.matrix ?? stopData?.truck_state?.matrix
@@ -356,13 +365,14 @@ export default function TruckCargo3D({ stopData, matrix, pallets, cargo }) {
 
     const sourcePallets = stopData?.pallets ?? pallets ?? []
     return matrixFromPallets(sourcePallets)
-  }, [stopData, matrix, pallets, cargo, hardcodedCargo])
+  }, [stopData, matrix, pallets, activeCargo])
 
-  console.log('3D PROPS:', HARD_CODE_OVERRIDE ? hardcodedCargo : (cargo ?? stopData?.matrix ?? stopData?.pallets ?? matrix ?? pallets ?? null))
+  console.log('3D PROPS:', activeCargo)
 
   return (
     <div className="truck-cargo-canvas">
       <Canvas
+        key={selectedStopKey}
         shadows
         camera={{ position: [6.4, 5.8, 6.9], fov: 42, near: 0.1, far: 100 }}
         gl={{ antialias: true, alpha: true }}
