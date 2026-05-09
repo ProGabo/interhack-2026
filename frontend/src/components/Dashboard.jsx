@@ -119,7 +119,7 @@ export default function Dashboard() {
 
           {route && (
             <div className="sidebar-footer">
-              {route.pallets && (
+              {(route.cubes || route.pallets) && (
                 <button className="btn-truck-view" onClick={() => setShowTruck(true)}>
                   View truck interior
                 </button>
@@ -136,12 +136,15 @@ export default function Dashboard() {
           )}
         </aside>
 
-        {showTruck && route?.pallets && (
+        {showTruck && (route?.cubes || route?.pallets) && (
           <TruckView
             layout={route.truck_layout}
+            cubes={route.cubes}
+            cubeGrid={route.cube_grid}
             pallets={route.pallets}
             deliveries={route.deliveries}
             deliveryStatus={deliveryStatus}
+            points={route.points}
             truckId={route.truck_id}
             onClose={() => setShowTruck(false)}
           />

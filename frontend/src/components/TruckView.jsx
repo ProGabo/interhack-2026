@@ -1,57 +1,92 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { OrbitControls, Html } from '@react-three/drei'
+import { OrbitControls, Edges, Html } from '@react-three/drei'
 import PRODUCTS from '../data/products'
 
-const CELL     = 0.34
+// One pallet zone is 1.0 × 1.0; cube grid is rows·3 × cols·3 cells, plus
+// optional vertical layers. Sizes tuned for the (cols·3) × (rows·3) sweep
+// the optimizer produces.
 const PALLET_W = 1.0
-const SPACING  = PALLET_W
-const PLAT_H   = 0.06
+const SLOT     = PALLET_W / 3.2
+const CUBE     = SLOT * 0.86
+const PALLET_H = 0.04
+const SHELL_H  = 1.25
 
-const BRAND_COLOR = { brand1: '#3b82f6', brand2: '#22c55e', brand3: '#f59e0b' }
-const BRAND_LABEL = { brand1: 'Brand 1', brand2: 'Brand 2', brand3: 'Brand 3' }
+// Distinct, dark-bg-friendly palette indexed by stop number.
+const STOP_COLORS = [
+  '#5B8DEF', '#39C19A', '#E0A346', '#D85F8C',
+  '#9F7AEA', '#F25F5F', '#48BB78', '#38B2AC',
+  '#ED8936', '#A0AEC0',
+]
 
-function countUnits(palletsData, filterFn) {
-  return palletsData.filter(filterFn).reduce(
-    (sum, p) => sum + (p.products?.reduce((s, pr) => s + pr.quantity, 0) ?? 0), 0
-  )
+const stopColor = (idx) => STOP_COLORS[(Math.max(0, idx - 1)) % STOP_COLORS.length]
+
+/* ── Legacy fallback: derive cubes from `pallets` + `deliveries` when the
+   route doc was seeded by the old script (no optimizer output). ── */
+function deriveCubesFromLegacy(pallets, deliveries) {
+  if (!pallets) return null
+  const stopByPallet = {}
+  deliveries?.forEach((d, i) => {
+    if (i === 0) return // depot
+    d.pallet_positions?.forEach((p) => { stopByPallet[`${p.row},${p.col}`] = i })
+  })
+  const cubes = []
+  pallets.forEach((pal) => {
+    const stopIndex = stopByPallet[`${pal.row},${pal.col}`] ?? 0
+    const units = []
+    pal.products?.forEach((p) => {
+      for (let i = 0; i < p.quantity; i++) units.push(p.product_id)
+    })
+    units.slice(0, 9).forEach((pid, i) => {
+      cubes.push({
+        x: pal.col * 3 + (i % 3),
+        y: pal.row * 3 + Math.floor(i / 3),
+        z: 0,
+        stop_index: stopIndex,
+        product_id: pid,
+      })
+    })
+  })
+  return cubes
 }
 
-/* ── Product cube ── */
-function ProductCube({ productId, quantity, x, baseY, hovered, onEnter, onLeave }) {
-  const info = PRODUCTS[productId]
-  if (!info) return null
-  const h = info.height_cells * CELL
-  const color = BRAND_COLOR[info.brand] ?? '#888'
+function CubeMesh({ cube, dim, faded, hovered, onEnter, onLeave }) {
+  const color = stopColor(cube.stop_index)
+  const xWorld = (cube.x - (dim.L - 1) / 2) * SLOT
+  const zWorld = (cube.y - (dim.W - 1) / 2) * SLOT
+  const yWorld = PALLET_H + CUBE / 2 + cube.z * (CUBE + 0.005)
 
   return (
     <mesh
-      position={[x, baseY + h / 2, 0]}
+      position={[xWorld, yWorld, zWorld]}
+      castShadow
       onPointerEnter={(e) => { e.stopPropagation(); onEnter() }}
       onPointerLeave={onLeave}
     >
-      <boxGeometry args={[CELL * 0.82, h, CELL * 0.82]} />
+      <boxGeometry args={[CUBE, CUBE, CUBE]} />
       <meshStandardMaterial
-        color={hovered ? '#fff' : color}
-        roughness={0.25}
-        metalness={0.15}
-        emissive={color}
-        emissiveIntensity={hovered ? 0.5 : 0.1}
+        color={color}
+        roughness={0.55}
+        metalness={0.08}
+        transparent={faded}
+        opacity={faded ? 0.18 : 1}
       />
+      <Edges scale={1.001} threshold={15} color="#ffffff" />
       {hovered && (
-        <Html distanceFactor={20} center>
+        <Html distanceFactor={18} center>
           <div style={{
-            background:'rgba(8,10,16,0.97)',
-            border:'1px solid rgba(196,18,48,0.4)',
-            borderRadius:'3px',
-            padding:'2px 7px',
-            fontSize:'10px',
-            color:'#fff',
-            whiteSpace:'nowrap',
-            fontFamily:'Montserrat,sans-serif',
-            pointerEvents:'none',
+            background: 'rgba(8,10,16,0.97)',
+            border: `1px solid ${color}`,
+            borderRadius: 3,
+            padding: '3px 8px',
+            fontSize: 10,
+            color: '#fff',
+            whiteSpace: 'nowrap',
+            fontFamily: 'Montserrat,sans-serif',
+            pointerEvents: 'none',
           }}>
-            {productId} · qty {quantity}
+            Stop {cube.stop_index}
+            {cube.product_id ? ` · ${cube.product_id}` : ''}
           </div>
         </Html>
       )}
@@ -59,129 +94,87 @@ function ProductCube({ productId, quantity, x, baseY, hovered, onEnter, onLeave 
   )
 }
 
-/* ── Pallet: always rendered, products removed when delivered ── */
-function Pallet({ row, col, products, delivered }) {
-  const [hoveredIdx, setHoveredIdx] = useState(null)
-  const x = col * SPACING
-  const z = row * SPACING
-  const hasProducts = !delivered && products.length > 0
-
+function PalletSlab({ row, col, rows, cols }) {
+  const x = (col - (cols - 1) / 2) * PALLET_W
+  const z = (row - (rows - 1) / 2) * PALLET_W
   return (
     <group position={[x, 0, z]}>
-      {/* Platform */}
-      <mesh position={[0, PLAT_H / 2, 0]}>
-        <boxGeometry args={[PALLET_W, PLAT_H, PALLET_W]} />
-        <meshStandardMaterial
-          color="#3a5080"
-          roughness={0.5}
-          metalness={0.4}
-          emissive="#1a2a50"
-          emissiveIntensity={0.25}
-        />
+      <mesh position={[0, PALLET_H / 2, 0]} receiveShadow>
+        <boxGeometry args={[PALLET_W * 0.94, PALLET_H, PALLET_W * 0.94]} />
+        <meshStandardMaterial color="#1B2230" roughness={0.85} metalness={0.1} />
       </mesh>
-      {/* Top face highlight */}
-      <mesh position={[0, PLAT_H + 0.003, 0]}>
-        <boxGeometry args={[PALLET_W - 0.02, 0.005, PALLET_W - 0.02]} />
-        <meshStandardMaterial
-          color="#4e6898"
-          roughness={0.35}
-          metalness={0.55}
-        />
+      <mesh position={[0, PALLET_H + 0.0015, 0]}>
+        <boxGeometry args={[PALLET_W * 0.94, 0.003, PALLET_W * 0.94]} />
+        <meshStandardMaterial color="#2C3447" roughness={0.5} />
       </mesh>
-
-      {/* Products */}
-      {hasProducts && products.map((p, i) => {
-        const n = products.length
-        const xOff = (i - (n - 1) / 2) * (CELL * 1.15)
-        return (
-          <ProductCube
-            key={i}
-            productId={p.product_id}
-            quantity={p.quantity}
-            x={xOff}
-            baseY={PLAT_H + 0.015}
-            hovered={hoveredIdx === i}
-            onEnter={() => setHoveredIdx(i)}
-            onLeave={() => setHoveredIdx(null)}
-          />
-        )
-      })}
     </group>
   )
 }
 
-/* ── Floor with subtle separators ── */
-function Floor({ rows, cols }) {
-  const totalW = cols * PALLET_W
-  const totalD = rows * PALLET_W
-  const cx = (totalW - PALLET_W) / 2
-  const cz = (totalD - PALLET_W) / 2
-
+function TruckShell({ rows, cols }) {
+  const w = cols * PALLET_W + 0.18
+  const d = rows * PALLET_W + 0.18
   return (
-    <group>
-      <mesh position={[cx, -0.04, cz]}>
-        <boxGeometry args={[totalW + 0.5, 0.06, totalD + 0.5]} />
-        <meshStandardMaterial color="#0b0d13" roughness={0.95} />
-      </mesh>
-      {Array.from({ length: cols - 1 }, (_, i) => (
-        <mesh key={`v${i}`} position={[(i + 1) * SPACING - 0.5, 0.001, cz]}>
-          <boxGeometry args={[0.015, 0.008, totalD + 0.2]} />
-          <meshStandardMaterial color="#ffffff" transparent opacity={0.06} />
-        </mesh>
-      ))}
-      {Array.from({ length: rows - 1 }, (_, i) => (
-        <mesh key={`h${i}`} position={[cx, 0.001, (i + 1) * SPACING - 0.5]}>
-          <boxGeometry args={[totalW + 0.2, 0.008, 0.015]} />
-          <meshStandardMaterial color="#ffffff" transparent opacity={0.06} />
-        </mesh>
-      ))}
-    </group>
+    <mesh position={[0, SHELL_H / 2, 0]}>
+      <boxGeometry args={[w, SHELL_H, d]} />
+      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      <Edges scale={1.0} color="#39456A" />
+    </mesh>
   )
 }
 
-/* ── Main export ── */
-export default function TruckView({ layout, pallets, deliveries, deliveryStatus, truckId, onClose }) {
-  // Infer grid dimensions from pallets data if layout is missing from Firestore
-  const maxRow = pallets?.length ? Math.max(...pallets.map(p => p.row)) : 1
-  const maxCol = pallets?.length ? Math.max(...pallets.map(p => p.col)) : 2
-  const rows = layout?.rows ?? maxRow + 1
-  const cols = layout?.cols ?? maxCol + 1
+function Floor({ rows, cols }) {
+  const w = cols * PALLET_W + 1.6
+  const d = rows * PALLET_W + 1.6
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.002, 0]} receiveShadow>
+      <planeGeometry args={[w, d]} />
+      <meshStandardMaterial color="#0A0D14" roughness={1} />
+    </mesh>
+  )
+}
 
-  // Build lookup from original pallet data
-  const palletMap = {}
-  pallets?.forEach(p => { palletMap[`${p.row},${p.col}`] = p })
+export default function TruckView({
+  layout, cubes, cubeGrid, pallets, deliveries, deliveryStatus,
+  points, truckId, onClose,
+}) {
+  const [hoverIdx, setHoverIdx] = useState(null)
 
-  // Always render the full grid — every position, even if no data
-  const grid = []
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      grid.push({
-        row: r,
-        col: c,
-        products: palletMap[`${r},${c}`]?.products ?? [],
-      })
-    }
-  }
+  const rows = layout?.rows ?? 2
+  const cols = layout?.cols ?? 3
 
-  // Which pallets have been unloaded
-  const deliveredSet = new Set()
-  deliveries?.forEach((d, i) => {
-    if (deliveryStatus?.[i] === 'delivered') {
-      d.pallet_positions?.forEach(p => deliveredSet.add(`${p.row},${p.col}`))
-    }
-  })
+  // Prefer real optimizer output; fall back to deriving from legacy data.
+  const resolvedCubes = useMemo(
+    () => cubes ?? deriveCubesFromLegacy(pallets, deliveries) ?? [],
+    [cubes, pallets, deliveries]
+  )
+  const dim = cubeGrid ?? { L: cols * 3, W: rows * 3, H: 1 }
 
-  const cx = (cols * PALLET_W - PALLET_W) / 2
-  const cz = (rows * PALLET_W - PALLET_W) / 2
+  // Stops present in the truck (ignore depot at index 0).
+  const stopIndices = useMemo(() => {
+    const set = new Set(resolvedCubes.map((c) => c.stop_index))
+    set.delete(0)
+    return [...set].sort((a, b) => a - b)
+  }, [resolvedCubes])
 
-  const totalUnits     = countUnits(pallets ?? [], () => true)
-  const deliveredUnits = countUnits(pallets ?? [], p => deliveredSet.has(`${p.row},${p.col}`))
-  const remaining      = totalUnits - deliveredUnits
-  const pct            = totalUnits > 0 ? Math.round((deliveredUnits / totalUnits) * 100) : 0
+  const totalCubes = resolvedCubes.length
+  const deliveredCubes = resolvedCubes.filter(
+    (c) => deliveryStatus?.[c.stop_index] === 'delivered'
+  ).length
+  const remaining = totalCubes - deliveredCubes
+  const pct = totalCubes ? Math.round((deliveredCubes / totalCubes) * 100) : 0
+
+  const span = Math.max(rows, cols)
+  const camDist = span * 1.7
+
+  // Pallet slabs for visual structure under the cubes.
+  const slabs = []
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) slabs.push({ row: r, col: c })
 
   return (
     <div className="truck-modal-overlay" onClick={onClose}>
-      <div className="truck-modal" onClick={e => e.stopPropagation()}>
+      <div className="truck-modal" onClick={(e) => e.stopPropagation()}>
 
         <div className="truck-modal-header">
           <div className="truck-modal-title">
@@ -194,32 +187,45 @@ export default function TruckView({ layout, pallets, deliveries, deliveryStatus,
 
         <div className="truck-modal-canvas">
           <Canvas
-            camera={{ position: [cx + cols * 0.5, 2.4 + rows * 0.35, cz + rows + 2], fov: 44 }}
+            shadows
+            camera={{ position: [camDist, camDist * 0.8, camDist], fov: 32 }}
             gl={{ antialias: true, alpha: false }}
-            style={{ background: '#080a10' }}
+            style={{ background: '#0A0D14' }}
           >
-            <ambientLight intensity={0.5} />
-            <directionalLight position={[3, 6, 3]} intensity={0.7} />
-            <pointLight position={[cx, 3.5, cz]} intensity={0.55} color="#ddeeff" />
+            <ambientLight intensity={0.55} />
+            <directionalLight
+              position={[3, 6, 4]}
+              intensity={0.85}
+              castShadow
+              shadow-mapSize-width={1024}
+              shadow-mapSize-height={1024}
+            />
+            <directionalLight position={[-4, 3, -2]} intensity={0.25} />
 
             <Floor rows={rows} cols={cols} />
+            <TruckShell rows={rows} cols={cols} />
+            {slabs.map((s, i) => (
+              <PalletSlab key={i} row={s.row} col={s.col} rows={rows} cols={cols} />
+            ))}
 
-            {grid.map((cell, i) => (
-              <Pallet
+            {resolvedCubes.map((cube, i) => (
+              <CubeMesh
                 key={i}
-                row={cell.row}
-                col={cell.col}
-                products={cell.products}
-                delivered={deliveredSet.has(`${cell.row},${cell.col}`)}
+                cube={cube}
+                dim={dim}
+                faded={deliveryStatus?.[cube.stop_index] === 'delivered'}
+                hovered={hoverIdx === i}
+                onEnter={() => setHoverIdx(i)}
+                onLeave={() => setHoverIdx(null)}
               />
             ))}
 
             <OrbitControls
-              target={[cx, 0.3, cz]}
+              target={[0, 0.25, 0]}
               enablePan={false}
-              minDistance={2}
-              maxDistance={11}
-              maxPolarAngle={Math.PI / 1.9}
+              minDistance={2.5}
+              maxDistance={camDist * 2.4}
+              maxPolarAngle={Math.PI / 2.05}
             />
           </Canvas>
         </div>
@@ -233,16 +239,20 @@ export default function TruckView({ layout, pallets, deliveries, deliveryStatus,
             <div className="truck-progress-bar" style={{ width: `${pct}%` }} />
           </div>
           <div className="truck-stat right">
-            <span className="truck-stat-val">{deliveredUnits} / {totalUnits}</span>
-            <span className="truck-stat-label">units delivered</span>
+            <span className="truck-stat-val">{deliveredCubes} / {totalCubes}</span>
+            <span className="truck-stat-label">boxes delivered</span>
           </div>
           <div className="truck-brands">
-            {Object.entries(BRAND_COLOR).map(([b, c]) => (
-              <span key={b} className="truck-legend-item">
-                <span className="truck-legend-dot" style={{ background: c }} />
-                {BRAND_LABEL[b]}
-              </span>
-            ))}
+            {stopIndices.map((idx) => {
+              const addr = points?.[idx]?.address
+              const label = addr ? addr.split(',')[0] : `Stop ${idx}`
+              return (
+                <span key={idx} className="truck-legend-item" title={addr}>
+                  <span className="truck-legend-dot" style={{ background: stopColor(idx) }} />
+                  {label}
+                </span>
+              )
+            })}
           </div>
         </div>
 
