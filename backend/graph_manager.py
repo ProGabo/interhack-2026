@@ -8,6 +8,7 @@ primary) since the truck just needs the fastest corridor from one to the other.
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -29,6 +30,31 @@ MAJOR_ROAD_FILTER = (
 
 DEFAULT_GRAPH_PATH = Path(__file__).with_name("cities_graph.graphml")
 DEFAULT_COORDS_PATH = Path(__file__).with_name("coords.csv")
+DEFAULT_REQUEST_PATH = Path(__file__).with_name("data") / "sample_request.json"
+
+
+def load_depot_coords(path: Path | str = DEFAULT_REQUEST_PATH) -> tuple[float, float] | None:
+    """Return (lat, lng) of the depot if `sample_request.json` exists, else None."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    req = json.loads(path.read_text(encoding="utf-8"))
+    c = req.get("depot", {}).get("coords")
+    if not c:
+        return None
+    return float(c["lat"]), float(c["lng"])
+
+
+def _draw_depot(ax, depot: tuple[float, float] | None) -> None:
+    if depot is None:
+        return
+    lat, lng = depot
+    ax.scatter(
+        [lng], [lat],
+        s=160, c="#d62728", marker="*", zorder=10,
+        edgecolors="black", linewidth=1.0,
+        label="Warehouse",
+    )
 
 
 def _city_graph(place: str) -> nx.MultiDiGraph:
@@ -106,7 +132,11 @@ def _edge_colors(graph: nx.MultiDiGraph) -> list[str]:
     ]
 
 
-def plot_graph(graph: nx.MultiDiGraph, save_path: Path | str | None = None) -> Path | None:
+def plot_graph(
+    graph: nx.MultiDiGraph,
+    save_path: Path | str | None = None,
+    depot: tuple[float, float] | None = None,
+) -> Path | None:
     """Show the graph with city streets in grey and the inter-city corridor in red.
 
     Always writes a PNG (default `cities_graph.png` next to this file) because the
@@ -125,6 +155,9 @@ def plot_graph(graph: nx.MultiDiGraph, save_path: Path | str | None = None) -> P
         show=False,
         close=False,
     )
+    _draw_depot(ax, depot)
+    if depot is not None:
+        ax.legend(loc="upper right", framealpha=0.9)
     ax.set_title(
         f"Granollers + Mollet del Vallès "
         f"({graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges)"
@@ -140,6 +173,7 @@ def plot_graph_with_dropoffs(
     coords: list[tuple[float, float]],
     title: str | None = None,
     save_path: Path | str | None = None,
+    depot: tuple[float, float] | None = None,
 ) -> Path | None:
     """Overlay drop-off coordinates on the road graph.
 
@@ -183,6 +217,8 @@ def plot_graph_with_dropoffs(
         label=f"{len(inside)} drop-offs (in extent)",
     )
 
+    _draw_depot(ax, depot)
+
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymin, ymax)
     ax.legend(loc="upper right", framealpha=0.9)
@@ -203,10 +239,13 @@ if __name__ == "__main__":
     out = save_graph(g)
     print(f"Saved to {out}")
 
+    depot = load_depot_coords()
+    if depot is not None:
+        print(f"Depot at lat={depot[0]:.4f}, lng={depot[1]:.4f}")
     if DEFAULT_COORDS_PATH.exists():
         coords = load_dropoff_coords(DEFAULT_COORDS_PATH)
         print(f"Loaded {len(coords)} drop-off points from {DEFAULT_COORDS_PATH.name}")
-        png = plot_graph_with_dropoffs(g, coords)
+        png = plot_graph_with_dropoffs(g, coords, depot=depot)
     else:
-        png = plot_graph(g)
+        png = plot_graph(g, depot=depot)
     print(f"Saved plot to {png}")
