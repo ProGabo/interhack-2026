@@ -34,6 +34,38 @@ export default function RouteRenderer({ points, deliveryStatus, activeColor = '#
     const route = directionsResult.routes[0]
     if (!route || !route.legs) return
 
+// Active segment polyline starting from the first pending stop
+export function ActiveDirections({ points, deliveryStatus, color }) {
+  const map = useMap()
+  const activeLineRef = useRef(null)
+
+  useEffect(() => {
+    if (!map || !window.google || !Array.isArray(points) || points.length < 2) return
+
+    const firstPending = deliveryStatus ? deliveryStatus.findIndex((s) => s === 'pending') : 0
+    const remaining = firstPending > 0 ? points.slice(firstPending - 1) : points
+
+    if (activeLineRef.current) {
+      activeLineRef.current.setMap(null)
+      activeLineRef.current = null
+    }
+    if (firstPending !== -1 && remaining.length >= 2) {
+      activeLineRef.current = new window.google.maps.Polyline({
+        path: remaining.map((point) => ({ lat: point.lat, lng: point.lng })),
+        strokeColor: color,
+        strokeOpacity: 0.85,
+        strokeWeight: 5,
+        map,
+      })
+    }
+
+    return () => {
+      if (activeLineRef.current) {
+        activeLineRef.current.setMap(null)
+        activeLineRef.current = null
+      }
+    }
+  }, [map, points, deliveryStatus, color])
     // Create polylines if they don't exist or if count changed
     if (polylinesRef.current.length !== route.legs.length) {
       polylinesRef.current.forEach((l) => l.setMap(null))
