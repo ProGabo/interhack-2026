@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import mockRoute from '@shared/mock_5_stops.json'
 import { useAuth } from '../context/AuthContext'
 import { subscribeToRoute, markStopDelivered } from '../firebase'
 import { useDriverLocation } from '../hooks/useDriverLocation'
@@ -6,6 +7,25 @@ import RouteMap from './Map'
 import TruckStopDrawer from './TruckStopDrawer'
 import VoiceAssistant from './VoiceAssistant'
 import TruckView from './TruckView'
+
+function generateMockCubes(mockRoute) {
+  if (!mockRoute?.stops) return []
+  const cubes = []
+  mockRoute.stops.forEach((stop, stopIndex) => {
+    stop.cargo?.forEach((item) => {
+      for (let i = 0; i < 9; i++) {
+        cubes.push({
+          x: (item.position?.col ?? 0) * 3 + (i % 3),
+          y: (item.position?.row ?? 0) * 3 + Math.floor(i / 3),
+          z: 0,
+          stop_index: stopIndex + 1,
+          product_id: item.product,
+        })
+      }
+    })
+  })
+  return cubes
+}
 
 function buildGoogleMapsUrl(points) {
   if (!points || points.length < 2) return '#'
@@ -17,7 +37,7 @@ function buildGoogleMapsUrl(points) {
 }
 
 export default function Dashboard() {
-  const FORCE_MOCK_ROUTE = false
+  const FORCE_MOCK_ROUTE = true
   const { driverId, logout } = useAuth()
   const [route, setRoute] = useState(null)
   const [deliveryStatus, setDeliveryStatus] = useState(null)
@@ -250,7 +270,7 @@ export default function Dashboard() {
 
           {normalizedRoute.points.length > 0 && (
             <div className="sidebar-footer">
-              {(route.cubes || route.pallets) && (
+              {(route?.cubes || route?.pallets || normalizedRoute.isMock) && (
                 <button className="btn-truck-view" onClick={() => setShowTruck(true)}>
                   View truck interior
                 </button>
@@ -267,16 +287,16 @@ export default function Dashboard() {
           )}
         </aside>
 
-        {showTruck && (route?.cubes || route?.pallets) && (
+        {showTruck && (route?.cubes || route?.pallets || normalizedRoute.isMock) && (
           <TruckView
-            layout={route.truck_layout}
-            cubes={route.cubes}
-            cubeGrid={route.cube_grid}
-            pallets={route.pallets}
-            deliveries={route.deliveries}
+            layout={route?.truck_layout ?? { rows: 2, cols: 4 }}
+            cubes={route?.cubes ?? generateMockCubes(mockRoute)}
+            cubeGrid={route?.cube_grid ?? { L: 12, W: 6, H: 1 }}
+            pallets={route?.pallets}
+            deliveries={route?.deliveries}
             deliveryStatus={deliveryStatus}
-            points={route.points}
-            truckId={route.truck_id}
+            points={normalizedRoute.points}
+            truckId={normalizedRoute.truckId}
             onClose={() => setShowTruck(false)}
           />
         )}
