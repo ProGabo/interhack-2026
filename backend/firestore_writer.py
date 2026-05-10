@@ -37,22 +37,49 @@ _init_attempted = False
 
 
 def _try_init() -> None:
+    """Lazy init. Credential precedence:
+      1. FIREBASE_SERVICE_ACCOUNT_JSON  — full JSON inline (best for serverless secrets)
+      2. FIREBASE_SERVICE_ACCOUNT       — path to a service-account.json on disk
+      3. seed/service-account.json      — legacy default for local dev
+    """
     global _db, _init_attempted
     if _init_attempted:
         return
     _init_attempted = True
-    cred_path = Path(os.environ.get("FIREBASE_SERVICE_ACCOUNT", _DEFAULT_CRED))
-    if not cred_path.exists():
-        print(f"[firestore_writer] no service account at {cred_path} — writes disabled")
-        return
+
     try:
         import firebase_admin
         from firebase_admin import credentials, firestore
+    except ImportError as exc:
+        print(f"[firestore_writer] firebase_admin missing: {exc}")
+        return
 
+    cred = None
+    inline = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+    if inline:
+        try:
+            cred = credentials.Certificate(json.loads(inline))
+            print("[firestore_writer] loaded credentials from FIREBASE_SERVICE_ACCOUNT_JSON")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[firestore_writer] FIREBASE_SERVICE_ACCOUNT_JSON parse failed: {exc}")
+
+    if cred is None:
+        cred_path = Path(os.environ.get("FIREBASE_SERVICE_ACCOUNT", _DEFAULT_CRED))
+        if not cred_path.exists():
+            print(f"[firestore_writer] no service account (env or {cred_path}) — writes disabled")
+            return
+        try:
+            cred = credentials.Certificate(str(cred_path))
+            print(f"[firestore_writer] loaded credentials from {cred_path}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[firestore_writer] cert load failed: {exc}")
+            return
+
+    try:
         if not firebase_admin._apps:
-            firebase_admin.initialize_app(credentials.Certificate(str(cred_path)))
+            firebase_admin.initialize_app(cred)
         _db = firestore.client()
-        print(f"[firestore_writer] initialised from {cred_path}")
+        print("[firestore_writer] firestore client initialised")
     except Exception as exc:  # noqa: BLE001
         print(f"[firestore_writer] init failed: {exc}")
 

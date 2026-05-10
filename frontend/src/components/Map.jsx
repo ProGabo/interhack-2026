@@ -1,5 +1,5 @@
 import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
-import { CompletedSegments, ActiveDirections } from './RouteRenderer'
+import RouteRenderer from './RouteRenderer'
 
 function CurrentLocationMarker({ location }) {
   if (!location) return null
@@ -26,8 +26,7 @@ export default function RouteMap({ points, currentLocation, deliveryStatus, acti
       style={{ width: '100%', height: '100%' }}
       gestureHandling="greedy"
     >
-      <CompletedSegments points={points} deliveryStatus={deliveryStatus} />
-      <ActiveDirections points={points} deliveryStatus={deliveryStatus} color="#C41230" />
+      <RouteRenderer points={points} deliveryStatus={deliveryStatus} />
 
       {points.map((point, i) => {
         const delivered = deliveryStatus?.[i] === 'delivered'

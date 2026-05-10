@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Map, AdvancedMarker, useMap } from '@vis.gl/react-google-maps'
 import { useAuth } from '../context/AuthContext'
 import { subscribeToRoutes } from '../firebase'
-import { CompletedSegments, ActiveDirections } from './RouteRenderer'
+import RouteRenderer from './RouteRenderer'
 import AdminRouteCreator from './AdminRouteCreator'
 
 const COLORS = ['#C41230', '#2563EB', '#059669', '#D97706', '#7C3AED']
@@ -71,12 +71,7 @@ function AdminMap({ routes }) {
       <BoundsFitter routes={routes} />
       {routes.map((route, i) => (
         <React.Fragment key={route.driver_id}>
-          <CompletedSegments points={route.points ?? []} deliveryStatus={route.delivery_status} />
-          <ActiveDirections
-            points={route.points ?? []}
-            deliveryStatus={route.delivery_status}
-            color={COLORS[i % COLORS.length]}
-          />
+          <RouteRenderer points={route.points ?? []} deliveryStatus={route.delivery_status} activeColor={route.status === 'disrupted' ? '#F59E0B' : '#3B82F6'} />
         </React.Fragment>
       ))}
 
