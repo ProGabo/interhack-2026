@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Edges, Html } from '@react-three/drei'
-import PRODUCTS from '../data/products'
 
 // One pallet zone is 1.0 × 1.0; cube grid is rows·3 × cols·3 cells, plus
 // optional vertical layers. Sizes tuned for the (cols·3) × (rows·3) sweep
