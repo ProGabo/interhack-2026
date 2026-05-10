@@ -1,40 +1,38 @@
-import { useEffect, useRef } from 'react'
-import { useMap } from '@vis.gl/react-google-maps'
+import { useEffect, useState, useRef } from 'react'
+import { useMap, useMapsLibrary } from '@vis.gl/react-google-maps'
 
-// Straight gray lines drawn over completed segments — no extra API call
-export function CompletedSegments({ points, deliveryStatus }) {
+export default function RouteRenderer({ points, deliveryStatus, activeColor = '#C41230', completedColor = '#6B7280' }) {
   const map = useMap()
-  const linesRef = useRef([])
+  const routesLib = useMapsLibrary('routes')
+  const [directionsResult, setDirectionsResult] = useState(null)
+  const polylinesRef = useRef([])
 
+  // 1. Fetch full route ONCE when points change
   useEffect(() => {
-    if (!map || !window.google) return
-    linesRef.current.forEach((l) => l.setMap(null))
-    linesRef.current = []
+    if (!routesLib || !map || !Array.isArray(points) || points.length < 2) return
 
-    if (!deliveryStatus || !Array.isArray(points) || points.length < 2) return
-
-    for (let i = 1; i < points.length; i++) {
-      if (deliveryStatus[i] === 'delivered') {
-        linesRef.current.push(
-          new window.google.maps.Polyline({
-            path: [
-              { lat: points[i - 1].lat, lng: points[i - 1].lng },
-              { lat: points[i].lat, lng: points[i].lng },
-            ],
-            strokeColor: '#6B7280',
-            strokeOpacity: 0.45,
-            strokeWeight: 4,
-            map,
-          })
-        )
+    const service = new routesLib.DirectionsService()
+    service.route(
+      {
+        origin: { lat: points[0].lat, lng: points[0].lng },
+        destination: { lat: points.at(-1).lat, lng: points.at(-1).lng },
+        waypoints: points.slice(1, -1).map((p) => ({ location: { lat: p.lat, lng: p.lng }, stopover: true })),
+        travelMode: 'DRIVING',
+      },
+      (result, status) => {
+        if (status === 'OK') {
+          setDirectionsResult(result)
+        }
       }
-    }
+    )
+  }, [routesLib, map, JSON.stringify(points)])
 
-    return () => { linesRef.current.forEach((l) => l.setMap(null)); linesRef.current = [] }
-  }, [map, points, deliveryStatus])
+  // 2. Render legs as Polylines and update their colors
+  useEffect(() => {
+    if (!map || !window.google || !directionsResult) return
 
-  return null
-}
+    const route = directionsResult.routes[0]
+    if (!route || !route.legs) return
 
 // Active segment polyline starting from the first pending stop
 export function ActiveDirections({ points, deliveryStatus, color }) {
@@ -68,6 +66,47 @@ export function ActiveDirections({ points, deliveryStatus, color }) {
       }
     }
   }, [map, points, deliveryStatus, color])
+    // Create polylines if they don't exist or if count changed
+    if (polylinesRef.current.length !== route.legs.length) {
+      polylinesRef.current.forEach((l) => l.setMap(null))
+      polylinesRef.current = route.legs.map((leg) => {
+        // Collect all path points for this leg
+        const path = []
+        leg.steps.forEach((step) => {
+          step.path.forEach((p) => path.push(p))
+        })
+        return new window.google.maps.Polyline({
+          path,
+          strokeWeight: 6,
+          map,
+        })
+      })
+    }
+
+    const firstPending = deliveryStatus ? deliveryStatus.findIndex((s) => s === 'pending') : 0
+
+    polylinesRef.current.forEach((polyline, i) => {
+      // Leg i goes from point i to point i+1
+      // If the stop we are heading TO (i+1) is delivered, it's completed.
+      // If firstPending is the stop we are heading to or we're at, it's active.
+      const isCompleted = firstPending === -1 || i < firstPending - 1
+      
+      polyline.setOptions({
+        strokeColor: isCompleted ? completedColor : activeColor,
+        strokeOpacity: isCompleted ? 0.6 : 0.85,
+        zIndex: isCompleted ? 1 : 2
+      })
+    })
+
+  }, [map, directionsResult, deliveryStatus, activeColor, completedColor])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      polylinesRef.current.forEach((l) => l.setMap(null))
+      polylinesRef.current = []
+    }
+  }, [])
 
   return null
 }
