@@ -9,15 +9,20 @@ import { resolveGranularCubePayload } from '../adapters/cubeLayout'
 const GRID_COLUMNS = 3
 const GRID_LAYERS = 3
 const GRID_LENGTH = 8
-const CELL = {
-  x: 0.4,
-  y: 0.3,
-  z: 0.3,
-}
 const GAP = {
-  x: 0.05,
-  y: 0.03,
-  z: 0.05,
+  x: 0.06,
+  y: 0.05,
+  z: 0.07,
+}
+const BED_INNER = {
+  width: 2.7,
+  height: 1.35,
+  length: 8.1,
+}
+const CELL = {
+  x: (BED_INNER.width - ((GRID_COLUMNS - 1) * GAP.x)) / GRID_COLUMNS,
+  y: (BED_INNER.height - ((GRID_LAYERS - 1) * GAP.y)) / GRID_LAYERS,
+  z: (BED_INNER.length - ((GRID_LENGTH - 1) * GAP.z)) / GRID_LENGTH,
 }
 const BED_THICKNESS = 0.24
 const BED_CLEARANCE = 0.35
@@ -31,6 +36,7 @@ const FRICTION_RED = '#EF4444'
 
 function getActionMeta(visualState, blockedByStackAbove) {
   if (blockedByStackAbove) return { actionLabel: 'SIDE LOADING FRICTION' }
+  if (visualState === 'empty') return { actionLabel: 'AVAILABLE LAYER' }
   if (visualState === 'current') return { actionLabel: 'DELIVER NOW' }
   if (visualState === 'reverse') return { actionLabel: 'RETURNED LOAD' }
   if (visualState === 'future') return { actionLabel: 'FUTURE STOP' }
@@ -97,15 +103,6 @@ function getSlotKey(row, col) {
   return `${row}-${col}`
 }
 
-function hashString(value = '') {
-  let hash = 0
-  for (let index = 0; index < String(value).length; index += 1) {
-    hash = ((hash << 5) - hash) + String(value).charCodeAt(index)
-    hash |= 0
-  }
-  return Math.abs(hash)
-}
-
 function normalizeCargoItems(cargo) {
   if (!Array.isArray(cargo)) return []
   return cargo.map((item, index) => ({
@@ -120,20 +117,26 @@ function normalizeCargoItems(cargo) {
   }))
 }
 
-function getTypeFromManifestSlot(slot, progressStop) {
-  if (slot?.status === 'return_assigned') return 'returnable'
-  if (slot?.status === 'active') {
-    const currentStop = Number(progressStop) + 1
-    const slotStop = Number(slot?.upcomingSequence)
-    if (!Number.isFinite(slotStop) || slotStop === currentStop) {
-      return 'active'
+function getDenseRenderableLayers(layers = [], maxLayers = GRID_LAYERS) {
+  const occupied = layers.filter((layer) => String(layer?.status ?? 'empty') !== 'empty')
+  const emptyCount = Math.max(0, maxLayers - occupied.length)
+  const emptyLayers = Array.from({ length: emptyCount }, (_, index) => {
+    const fallbackLayer = layers.find((layer) => String(layer?.status ?? 'empty') === 'empty') ?? {}
+    return {
+      ...fallbackLayer,
+      status: 'empty',
+      layerIndex: occupied.length + index,
+      label: fallbackLayer?.label ?? 'Available layer',
+      reason: fallbackLayer?.reason ?? 'Free vertical capacity for reverse logistics.',
     }
-    return 'future'
-  }
-  return 'empty'
+  })
+  return [...occupied, ...emptyLayers]
+    .slice(0, maxLayers)
+    .map((layer, index) => ({ ...layer, layerIndex: index }))
 }
 
 function classifyVisualState({ stopIndex, activeStopIndex, isReverse = false }) {
+  if (Number(stopIndex) < 0) return 'empty'
   if (isReverse) return stopIndex < activeStopIndex ? 'reverse' : 'past'
   if (stopIndex < activeStopIndex) return 'past'
   if (stopIndex === activeStopIndex) return 'current'
@@ -156,6 +159,7 @@ function enrichBoxInteractions(items) {
   return safeItems.map((item) => {
     const blockedByStackAbove = safeItems.some((candidate) => {
       if (candidate?.id === item?.id) return false
+      if (String(candidate?.type) === 'empty') return false
       const candidateY = Number(candidate?.y ?? 0)
       const itemY = Number(item?.y ?? 0)
       if (candidateY <= itemY) return false
@@ -270,93 +274,59 @@ function buildTruckLoadManifest({
   cargo = [],
   progressStop = 0,
 }) {
+  const layeredSlots = Array.isArray(manifest?.layeredSlots) ? manifest.layeredSlots : []
   const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
-
-  if (slots.length === 0) {
+  if (layeredSlots.length === 0 && slots.length === 0) {
     return truckLoadManifestMock
   }
 
-  const byKey = new Map(
-    normalizeCargoItems(cargo).map((item) => [getSlotKey(item.row, item.col), item]),
-  )
-
-  const mapped = slots
-    .filter((slot) => slot.col < GRID_LENGTH && slot.row < GRID_COLUMNS)
-    .map((slot, index) => {
-      const type = getTypeFromManifestSlot(slot, progressStop)
-      if (type === 'empty') return null
-
-      const keyHash = hashString(slot.key)
-      const item = byKey.get(slot.key)
-      const skuCount = Math.max(1, Number(slot?.skuCount ?? item?.skuCount ?? ((keyHash % 9) + 6)))
-      const height = type === 'active'
-        ? (skuCount >= 12 ? 2 : 1)
-        : 1
-      const y = Math.max(
-        0,
-        Math.min(
-          GRID_LAYERS - height,
-          type === 'active' && (keyHash % 4 === 0) ? 1 : 0,
-        ),
-      )
-      const label = slot?.label ?? item?.label ?? `${skuCount} SKUs`
-      const defaultReason = `Stop ${slot?.upcomingSequence ?? progressStop + 1}: ${label} placed at ${slot?.coordinate ?? 'lateral floor'} for side-curtain access.`
-      const stopSequence = Number(slot?.upcomingSequence ?? progressStop + 1)
-      const stopIndex = Number.isFinite(stopSequence) ? Math.max(0, stopSequence - 1) : Math.max(0, progressStop)
-      const isReverse = type === 'returnable' || String(item?.type ?? '').toLowerCase().includes('return')
-
-      return {
-        id: slot.key ?? `slot-${index}`,
-        x: Math.max(0, Math.min(GRID_COLUMNS - 1, Number(slot.row))),
-        y,
-        z: Math.max(0, Math.min(GRID_LENGTH - 1, Number(slot.col))),
-        width: 1,
-        height,
-        depth: 1,
-        type,
-        label,
-        reason: String(slot?.reason ?? item?.reason ?? defaultReason),
-        skuCount,
-        product: item?.product ?? slot?.product ?? 'Mixed SKU',
-        stopIndex,
-        isReverse,
-      }
-    })
-    .filter(Boolean)
-
-  // Always reserve visible reverse-logistics capacity from the first stop.
-  const reservedReturnables = slots
-    .filter((slot) => slot.col < GRID_LENGTH && slot.row < GRID_COLUMNS)
-    .filter((slot) => slot.status === 'empty' || slot.status === 'return_assigned')
-    .filter((slot) => slot.col === GRID_LENGTH - 1 || slot.col === GRID_LENGTH - 2)
-    .slice(0, 2)
-    .map((slot, index) => ({
-      id: `reserved-return-${slot.key}-${index}`,
-      x: Math.max(0, Math.min(GRID_COLUMNS - 1, Number(slot.row))),
-      y: 0,
-      z: Math.max(0, Math.min(GRID_LENGTH - 1, Number(slot.col))),
-      width: 1,
-      height: 1,
-      depth: 1,
-      type: 'returnable',
-      label: 'Empty Box',
-      reason: 'Space reserved here for the empty crates you will pick up.',
-      skuCount: 0,
-      product: 'Returnables',
-      stopIndex: Math.max(0, progressStop),
-      isReverse: true,
+  const byKey = new Map(normalizeCargoItems(cargo).map((item) => [getSlotKey(item.row, item.col), item]))
+  const sourceSlots = layeredSlots.length > 0
+    ? layeredSlots
+    : slots.map((slot) => ({
+      ...slot,
+      layers: [{
+        ...slot,
+        layerIndex: 0,
+        status: slot.status,
+      }],
     }))
 
-  const byCoordinate = new Set(mapped.map((item) => `${item.x}-${item.y}-${item.z}`))
-  reservedReturnables.forEach((item) => {
-    const coordKey = `${item.x}-${item.y}-${item.z}`
-    if (!byCoordinate.has(coordKey)) {
-      mapped.push(item)
-      byCoordinate.add(coordKey)
-    }
-  })
-
-  return mapped
+  return sourceSlots
+    .filter((slot) => Number(slot?.col ?? 0) < GRID_LENGTH && Number(slot?.row ?? 0) < GRID_COLUMNS)
+    .flatMap((slot, slotIndex) => {
+      const item = byKey.get(slot.key)
+      const sourceLayers = Array.isArray(slot?.layers) ? slot.layers : []
+      const layers = getDenseRenderableLayers(sourceLayers, Math.min(GRID_LAYERS, sourceLayers.length || GRID_LAYERS))
+      return layers.map((layer) => {
+        const layerIndex = Math.max(0, Number(layer?.layerIndex ?? 0))
+        const status = String(layer?.status ?? 'empty')
+        const type = status === 'active' ? 'active' : status === 'return_assigned' ? 'returnable' : 'empty'
+        const skuCount = Math.max(0, Number(layer?.skuCount ?? item?.skuCount ?? 0))
+        const label = layer?.label ?? (type === 'empty' ? 'Available layer' : `${Math.max(1, skuCount)} SKUs`)
+        const stopSequence = Number(layer?.upcomingSequence)
+        const stopIndex = Number.isFinite(stopSequence) ? Math.max(0, stopSequence - 1) : -1
+        const defaultReason = type === 'empty'
+          ? 'Free vertical capacity for reverse logistics.'
+          : `Stop ${layer?.upcomingSequence ?? progressStop + 1}: ${label} aligned for side-curtain unloading order.`
+        return {
+          id: `${slot.key}-${layerIndex}-${slotIndex}`,
+          x: Math.max(0, Math.min(GRID_COLUMNS - 1, Number(slot.row))),
+          y: Math.max(0, Math.min(GRID_LAYERS - 1, layerIndex)),
+          z: Math.max(0, Math.min(GRID_LENGTH - 1, Number(slot.col))),
+          width: 1,
+          height: 1,
+          depth: 1,
+          type,
+          label,
+          reason: String(layer?.reason ?? item?.reason ?? defaultReason),
+          skuCount,
+          product: layer?.product ?? item?.product ?? 'Mixed SKU',
+          stopIndex,
+          isReverse: type === 'returnable',
+        }
+      })
+    })
 }
 
 function getGridFootprint() {
@@ -423,22 +393,29 @@ function TruckChassis() {
   const cabLength = 0.72
   const cabWidth = Math.max(1.45, width + 0.12)
   const cabHeight = 0.98
-  const cabBaseZ = -(length / 2 + cabLength / 2 + 0.18)
+  const chassisMargin = 0.24
+  const bedLength = length + (chassisMargin * 2)
+  const sideWallLength = bedLength + 0.02
+  const cabBaseZ = -((bedLength / 2) + (cabLength / 2) + 0.1)
+  const rearWallZ = (bedLength / 2) + 0.01
+  const frontAxleZ = -(bedLength / 2) + 0.68
+  const rearAxlePrimaryZ = (bedLength / 2) - 0.3
+  const rearAxleSecondaryZ = rearAxlePrimaryZ - 0.58
 
   return (
     <group>
       <mesh receiveShadow position={[0, BED_CLEARANCE - 0.25, -0.25]}>
-        <boxGeometry args={[width + 0.95, 0.28, length + 2.25]} />
+        <boxGeometry args={[width + 0.88, 0.28, bedLength + 1.05]} />
         <meshStandardMaterial color="#1f2937" metalness={0.08} roughness={0.88} />
       </mesh>
 
       <mesh receiveShadow position={[0, BED_CLEARANCE, 0]}>
-        <boxGeometry args={[width + 0.32, BED_THICKNESS, length + 0.32]} />
+        <boxGeometry args={[width + 0.24, BED_THICKNESS, bedLength]} />
         <meshStandardMaterial color="#475569" metalness={0.1} roughness={0.84} />
       </mesh>
 
       <mesh receiveShadow position={[0, BED_CLEARANCE - 0.22, 0]}>
-        <boxGeometry args={[width + 0.82, 0.24, length + 0.62]} />
+        <boxGeometry args={[width + 0.78, 0.24, bedLength + 0.5]} />
         <meshStandardMaterial color="#1e293b" metalness={0.08} roughness={0.86} />
       </mesh>
 
@@ -480,28 +457,33 @@ function TruckChassis() {
       </mesh>
 
       <mesh position={[-(width / 2 + 0.06), BED_CLEARANCE + BED_THICKNESS + 0.02, 0]}>
-        <boxGeometry args={[0.03, 0.04, length + 0.08]} />
+        <boxGeometry args={[0.03, 0.04, sideWallLength]} />
         <meshStandardMaterial color="#bfdbfe" emissive="#60a5fa" emissiveIntensity={0.22} transparent opacity={0.85} />
       </mesh>
       <mesh position={[width / 2 + 0.06, BED_CLEARANCE + BED_THICKNESS + 0.02, 0]}>
-        <boxGeometry args={[0.03, 0.04, length + 0.08]} />
+        <boxGeometry args={[0.03, 0.04, sideWallLength]} />
         <meshStandardMaterial color="#bfdbfe" emissive="#60a5fa" emissiveIntensity={0.22} transparent opacity={0.85} />
       </mesh>
       <mesh position={[-(width / 2 + 0.14), BED_CLEARANCE + 0.56, 0]}>
-        <boxGeometry args={[0.02, 0.82, length + 0.08]} />
+        <boxGeometry args={[0.02, 0.82, sideWallLength]} />
         <meshPhysicalMaterial color="#dbeafe" transparent opacity={0.12} roughness={0.1} metalness={0.04} transmission={0.8} ior={1.18} />
       </mesh>
       <mesh position={[width / 2 + 0.14, BED_CLEARANCE + 0.56, 0]}>
-        <boxGeometry args={[0.02, 0.82, length + 0.08]} />
+        <boxGeometry args={[0.02, 0.82, sideWallLength]} />
         <meshPhysicalMaterial color="#dbeafe" transparent opacity={0.12} roughness={0.1} metalness={0.04} transmission={0.8} ior={1.18} />
       </mesh>
 
-      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, -(length / 2 + 0.8)]} scale={[1, 1, 1]} />
-      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, -(length / 2 + 0.8)]} scale={[1, 1, 1]} />
-      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, -0.8]} scale={[1, 1, 1.02]} />
-      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, -0.8]} scale={[1, 1, 1.02]} />
-      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, 0.9]} scale={[1, 1, 1.05]} />
-      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, 0.9]} scale={[1, 1, 1.05]} />
+      <mesh position={[0, BED_CLEARANCE + 0.55, rearWallZ]}>
+        <boxGeometry args={[width + 0.26, 0.78, 0.06]} />
+        <meshStandardMaterial color="#334155" metalness={0.08} roughness={0.85} />
+      </mesh>
+
+      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, frontAxleZ]} scale={[1, 1, 1]} />
+      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, frontAxleZ]} scale={[1, 1, 1]} />
+      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, rearAxleSecondaryZ]} scale={[1, 1, 1.02]} />
+      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, rearAxleSecondaryZ]} scale={[1, 1, 1.02]} />
+      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, rearAxlePrimaryZ]} scale={[1, 1, 1.05]} />
+      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, rearAxlePrimaryZ]} scale={[1, 1, 1.05]} />
     </group>
   )
 }
@@ -521,6 +503,7 @@ function CargoBox({
   const isReverse = item.visualState === 'reverse'
   const isCurrent = item.visualState === 'current'
   const isFuture = item.visualState === 'future'
+  const isEmpty = item.visualState === 'empty' || item.type === 'empty'
 
   useFrame(({ clock }) => {
     if (!materialRef.current) return
@@ -528,6 +511,11 @@ function CargoBox({
       const frictionPulse = 0.16 + (Math.sin(clock.elapsedTime * 7.8) * 0.07)
       materialRef.current.emissive.set(FRICTION_RED)
       materialRef.current.emissiveIntensity = Math.max(0.08, frictionPulse)
+      return
+    }
+    if (isEmpty) {
+      materialRef.current.emissive.set('#6b7280')
+      materialRef.current.emissiveIntensity = 0.02
       return
     }
     if (hovered) {
@@ -549,7 +537,7 @@ function CargoBox({
     }
     materialRef.current.emissive.set('#1f2937')
     materialRef.current.emissiveIntensity = 0.02
-  }, [hovered, blockedByStackAbove, isCurrent, isReverse])
+  }, [hovered, blockedByStackAbove, isCurrent, isReverse, isEmpty])
 
   useEffect(() => {
     if (!groupRef.current) return () => {}
@@ -590,19 +578,19 @@ function CargoBox({
         <boxGeometry args={[totalX, totalY, totalZ]} />
         <meshStandardMaterial
           ref={materialRef}
-          color={isCurrent ? ELECTRIC_BLUE : isReverse ? ECO_GREEN : isFuture ? GHOST_GRAY : '#b91c1c'}
+          color={isEmpty ? '#cbd5e1' : isCurrent ? ELECTRIC_BLUE : isReverse ? ECO_GREEN : isFuture ? GHOST_GRAY : '#b91c1c'}
           emissive={isCurrent ? ELECTRIC_BLUE_EMISSIVE : isReverse ? ECO_GREEN_EMISSIVE : '#1f2937'}
           emissiveIntensity={isCurrent ? 0.58 : 0.03}
-          transparent={isFuture}
-          opacity={isFuture ? 0.3 : 1}
+          transparent={isFuture || isEmpty}
+          opacity={isEmpty ? 0.08 : isFuture ? 0.3 : 1}
           metalness={0.05}
           roughness={isReverse ? 0.95 : 0.74}
         />
       </mesh>
-      {isFuture ? (
+      {isFuture || isEmpty ? (
         <mesh scale={[1.01, 1.01, 1.01]}>
           <boxGeometry args={[totalX, totalY, totalZ]} />
-          <meshBasicMaterial color="#ffffff" wireframe transparent opacity={0.28} />
+          <meshBasicMaterial color={isEmpty ? '#9ca3af' : '#ffffff'} wireframe transparent opacity={isEmpty ? 0.45 : 0.28} />
         </mesh>
       ) : null}
     </group>
@@ -686,18 +674,18 @@ function CargoScene({
         <FadingPoofBox key={`poof-${item.id}-${animateToken}`} item={item} animateToken={animateToken} />
       ))}
       <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, BED_CLEARANCE - 0.9, 0]}>
-        <planeGeometry args={[width + 7.5, length + 7.5]} />
+        <planeGeometry args={[width + 3.2, length + 3.2]} />
         <shadowMaterial opacity={0.24} />
       </mesh>
 
       <OrbitControls
         makeDefault
         enablePan={false}
-        minDistance={4.9}
-        maxDistance={11.5}
-        minPolarAngle={0.82}
-        maxPolarAngle={1.16}
-        target={[0, BED_CLEARANCE + 0.72, 0.24]}
+        minDistance={3.8}
+        maxDistance={8.4}
+        minPolarAngle={0.8}
+        maxPolarAngle={1.2}
+        target={[0, BED_CLEARANCE + 0.72, 0.08]}
       />
     </>
   )
@@ -797,18 +785,18 @@ function GranularCubeScene({
       ))}
 
       <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, BED_CLEARANCE - 0.9, 0]}>
-        <planeGeometry args={[cols * 2.8, rows * 4.2]} />
+        <planeGeometry args={[cols * 2.1, rows * 3.2]} />
         <shadowMaterial opacity={0.24} />
       </mesh>
 
       <OrbitControls
         makeDefault
         enablePan={false}
-        minDistance={4.9}
-        maxDistance={11.5}
-        minPolarAngle={0.82}
-        maxPolarAngle={1.16}
-        target={[0, BED_CLEARANCE + 0.72, 0.24]}
+        minDistance={3.8}
+        maxDistance={8.4}
+        minPolarAngle={0.8}
+        maxPolarAngle={1.2}
+        target={[0, BED_CLEARANCE + 0.72, 0.08]}
       />
     </>
   )
@@ -914,9 +902,14 @@ export default function TruckCargo3D({
       })),
     [granularPayload.cubes, effectiveActiveStopIndex],
   )
+  const hasManifestData = classifiedManifestBoxes.length > 0
   const hasScheduleDrivenData = classifiedScheduleBoxes.length > 0
   const useGranularMode = !hasScheduleDrivenData && granularPayload.cubes.length > 0
-  const renderBoxes = hasScheduleDrivenData ? classifiedScheduleBoxes : classifiedManifestBoxes
+  const renderBoxes = hasManifestData
+    ? classifiedManifestBoxes
+    : hasScheduleDrivenData
+      ? classifiedScheduleBoxes
+      : classifiedManifestBoxes
   const visibleGranularCubes = useMemo(
     () => classifiedGranularCubes.filter((item) => item.visualState !== 'past'),
     [classifiedGranularCubes],
@@ -934,7 +927,7 @@ export default function TruckCargo3D({
     .filter((item) => item.visualState === 'reverse')
     .length
   const trackedSlots = activeRenderItems
-    .filter((item) => item.visualState !== 'past')
+    .filter((item) => item.visualState !== 'past' && item.visualState !== 'empty')
     .length
   const currentStopBoxes = activeRenderItems
     .filter((item) => item.visualState === 'current')
@@ -949,18 +942,20 @@ export default function TruckCargo3D({
   const hoverSummary = useMemo(() => {
     if (!hoveredPayload) return null
     const hoveredStopIndex = Number(hoveredPayload?.stopIndex ?? hoveredPayload?.stop_index ?? -1)
+    const isEmptyLayer = hoveredPayload?.visualState === 'empty' || hoveredPayload?.type === 'empty'
     const hoveredStop = hoveredStopIndex >= 0 ? routeStops?.[hoveredStopIndex] : null
     const stopName = hoveredStop?.location?.address
       ?? hoveredStop?.address
-      ?? `Stop ${hoveredStopIndex + 1}`
+      ?? (isEmptyLayer ? 'Available capacity' : `Stop ${hoveredStopIndex + 1}`)
     return {
-      kicker: 'Stop Active',
+      kicker: isEmptyLayer ? 'Open Capacity' : 'Stop Active',
       headline: hoveredPayload.actionLabel,
       detail: `${hoveredPayload.productType} • ${hoveredPayload.quantityLabel}`,
-      secondaryDetail: `Stop #${Math.max(1, hoveredStopIndex + 1)} • ${hoveredPayload.weightLabel} • ${hoveredPayload.volumeLabel}`,
+      secondaryDetail: `${isEmptyLayer ? 'Reserve layer' : `Stop #${Math.max(1, hoveredStopIndex + 1)}`} • ${hoveredPayload.weightLabel} • ${hoveredPayload.volumeLabel}`,
       instruction: hoveredPayload.unloadInstruction,
       stopIndex: hoveredStopIndex,
       stopName,
+      isEmptyLayer,
     }
   }, [hoveredPayload, routeStops])
 
@@ -985,10 +980,12 @@ export default function TruckCargo3D({
       onHighlightReasonChange?.('')
       return
     }
+    if (hoverSummary.isEmptyLayer) {
+      onHighlightReasonChange?.('Available layers are reserved bottom-up for reverse logistics to avoid blocking active deliveries.')
+      return
+    }
     const sequence = (hoverSummary.stopIndex ?? 0) + 1
-    onHighlightReasonChange?.(
-      `Optimal discharge sequence for Stop #${sequence}: ${hoverSummary.stopName}. Highlighted load aligns with side-curtain unloading order.`,
-    )
+    onHighlightReasonChange?.(`Optimal discharge sequence for Stop #${sequence}: ${hoverSummary.stopName}. Highlighted load aligns with side-curtain unloading order.`)
   }, [hoverSummary, onHighlightReasonChange])
 
   useEffect(() => {
@@ -1031,7 +1028,7 @@ export default function TruckCargo3D({
       <Canvas
         key={selectedStopKey}
         shadows
-        camera={{ position: [-5.7, 7.1, 5.9], fov: 35, near: 0.1, far: 120 }}
+        camera={{ position: [-3.9, 5.2, 4.1], fov: 33, near: 0.1, far: 120 }}
         gl={{ antialias: true, alpha: true }}
       >
         {useGranularMode ? (

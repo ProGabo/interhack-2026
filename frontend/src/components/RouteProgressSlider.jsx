@@ -36,7 +36,7 @@ export default function RouteProgressSlider({
         </button>
       </div>
       <p className="route-progress-caption">
-        Process each stop to convert delivered blue loads into eco-green return recovery slots without losing side access.
+        Process each stop with top-down (LIFO) unloading so blue deliveries become eco-green return layers without losing side access.
       </p>
     </section>
   )

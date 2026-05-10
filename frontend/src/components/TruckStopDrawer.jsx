@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { animate } from 'framer-motion'
+import { useEffect, useMemo, useState } from 'react'
 import { normalizeStopData } from '../adapters/normalizeStopData'
 import {
+  buildDDIMetrics,
   buildManifestExplainability,
-  computeReturnableSpaceReuse,
   buildRouteProgressStatus,
   buildSlotManifest,
 } from '../adapters/operationalHeuristics'
@@ -12,15 +11,13 @@ import ExplainabilityWidget from './ExplainabilityWidget'
 import RouteProgressSlider from './RouteProgressSlider'
 import SlotManifestGrid from './SlotManifestGrid'
 
-// Local fallback prevents crashes if the heatmap component is missing.
-function TruckStatusHeatmap({ manifest, trackedSlots }) {
-  const manifestSlots = Array.isArray(manifest?.slots) ? manifest.slots.length : 0
-  const slots = Number.isFinite(trackedSlots) ? trackedSlots : manifestSlots
+function MetricCard({ label, value, detail }) {
   return (
-    <div className="truck-status-heatmap-fallback" aria-label="Truck status fallback">
-      <strong>Truck Status</strong>
-      <span>{slots} slots tracked</span>
-    </div>
+    <article className="truck-kpi-card">
+      <p className="truck-kpi-label">{label}</p>
+      <strong>{value}</strong>
+      {detail ? <span className="truck-kpi-detail">{detail}</span> : null}
+    </article>
   )
 }
 
@@ -71,69 +68,36 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
       }),
     [routeStops, progressStop, normalizedStop],
   )
+  const stopIndex = (safeStop?.index ?? 0) + 1
+  const serviceTime = safeStop?.serviceTime ?? null
+  const deliveryStatus = progressStop > (safeStop?.index ?? 0) ? 'delivered' : 'pending'
+  const ddiMetrics = useMemo(
+    () =>
+      buildDDIMetrics({
+        manifest,
+        routeStops,
+        progressStop,
+        loadStats: normalizedStop?.loadStats ?? {},
+      }),
+    [manifest, routeStops, progressStop, normalizedStop?.loadStats],
+  )
   const manifestInsights = useMemo(
     () => {
       const baseInsights = buildManifestExplainability({
         manifest,
         progressStop,
         loadStats: normalizedStop?.loadStats ?? {},
-        operationalKpis: normalizedStop?.operationalKpis ?? {},
+        ddiMetrics,
       })
       return highlightInsight ? [highlightInsight, ...baseInsights] : baseInsights
     },
-    [manifest, progressStop, normalizedStop, highlightInsight],
-  )
-
-  const stopIndex = (safeStop?.index ?? 0) + 1
-  const serviceTime = safeStop?.serviceTime ?? null
-  const deliveryStatus = progressStop > (safeStop?.index ?? 0) ? 'delivered' : 'pending'
-  const operationalKpis = normalizedStop?.operationalKpis ?? {}
-  const returnableSpaceReuse = useMemo(
-    () => computeReturnableSpaceReuse({ manifest }),
-    [manifest],
+    [manifest, progressStop, normalizedStop, ddiMetrics, highlightInsight],
   )
   const canProcessStop = progressStop < routeStops.length
-  const displayedTimeSaved = operationalKpis?.estimatedUnloadMinutesSaved
-    ?? operationalKpis?.estimatedUnloadMinutes
-    ?? serviceTime
-    ?? 0
-  const displayedCo2Saved = operationalKpis?.co2SavedKg ?? 0
-  const [animatedTimeSaved, setAnimatedTimeSaved] = useState(Number(displayedTimeSaved) || 0)
-  const [animatedCo2Saved, setAnimatedCo2Saved] = useState(Number(displayedCo2Saved) || 0)
-  const previousTimeSavedRef = useRef(Number(displayedTimeSaved) || 0)
-  const previousCo2SavedRef = useRef(Number(displayedCo2Saved) || 0)
-
-  useEffect(() => {
-    const nextTime = Number(displayedTimeSaved) || 0
-    const fromTime = previousTimeSavedRef.current
-    if (fromTime === nextTime) {
-      setAnimatedTimeSaved(nextTime)
-      return () => {}
-    }
-    const controls = animate(fromTime, nextTime, {
-      duration: 0.45,
-      ease: 'easeOut',
-      onUpdate: (latest) => setAnimatedTimeSaved(latest),
-    })
-    previousTimeSavedRef.current = nextTime
-    return () => controls.stop()
-  }, [displayedTimeSaved])
-
-  useEffect(() => {
-    const nextCo2 = Number(displayedCo2Saved) || 0
-    const fromCo2 = previousCo2SavedRef.current
-    if (fromCo2 === nextCo2) {
-      setAnimatedCo2Saved(nextCo2)
-      return () => {}
-    }
-    const controls = animate(fromCo2, nextCo2, {
-      duration: 0.5,
-      ease: 'easeOut',
-      onUpdate: (latest) => setAnimatedCo2Saved(latest),
-    })
-    previousCo2SavedRef.current = nextCo2
-    return () => controls.stop()
-  }, [displayedCo2Saved])
+  const returnPayloadDetail = `Used by returns: ${ddiMetrics.returnsVolumeUsed.toFixed(1)} m3`
+  const loadModeDetail = `Order rows ${ddiMetrics.groupedByOrderRows}/${Math.max(ddiMetrics.analyzedRows, 1)} | SKU rows ${ddiMetrics.groupedBySkuRows}/${Math.max(ddiMetrics.analyzedRows, 1)}`
+  const blockedCoordinates = (ddiMetrics.blockedPallets ?? []).slice(0, 3).map((slot) => slot.coordinate)
+  const blockedStackCoordinates = (ddiMetrics.verticalBlockedSlots ?? []).slice(0, 3).map((slot) => slot.coordinate)
 
   if (!selectedStop) return null
 
@@ -169,17 +133,43 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
       </div>
 
       <section className="truck-kpi-header" aria-label="KPI Impact Header">
-        <article className="truck-kpi-card">
-          <p className="truck-kpi-label">Time Saved</p>
-          <strong>{Math.max(0, Math.round(animatedTimeSaved))} min</strong>
+        <MetricCard
+          label="Blocked Pallets"
+          value={Math.max(0, Number(ddiMetrics.blockedPalletsCount) || 0)}
+          detail="Later-stop pallets blocking current-stop side unloading."
+        />
+        <MetricCard
+          label="Vertical Extra Moves"
+          value={Math.max(0, Number(ddiMetrics.extraMoves) || 0)}
+          detail={`${Math.max(0, Number(ddiMetrics.blockedVerticalSlotsCount) || 0)} blocked stack slot(s) for current stop.`}
+        />
+        <MetricCard
+          label="Load Balancing"
+          value={ddiMetrics.loadGroupingMode}
+          detail={loadModeDetail}
+        />
+        <MetricCard
+          label="Available Volume for Returns"
+          value={`${Math.max(0, Number(ddiMetrics.returnsVolumeAvailable) || 0).toFixed(1)} m3`}
+          detail={ddiMetrics.projectedOverflowRisk ? `${returnPayloadDetail} | Risk: future overflow` : returnPayloadDetail}
+        />
+      </section>
+      <section className={`truck-recommendation-banner${ddiMetrics.projectedOverflowRisk ? ' is-risk' : ''}`} aria-label="Operational recommendation">
+        <p className="truck-recommendation-label">Decision Recommendation</p>
+        <strong>{ddiMetrics.recommendation}</strong>
+      </section>
+      <section className="truck-micro-insights" aria-label="Metric assumptions and blockers">
+        <article className="truck-micro-card">
+          <p className="truck-micro-label">Blocked Slot IDs</p>
+          <strong>{[...blockedCoordinates, ...blockedStackCoordinates].slice(0, 3).join(', ') || 'None'}</strong>
+          <span className="truck-micro-detail">Top 3 slots creating lateral or vertical re-handle risk for the current stop.</span>
         </article>
-        <article className="truck-kpi-card">
-          <p className="truck-kpi-label">CO2 Saved</p>
-          <strong>{Math.max(0, animatedCo2Saved).toFixed(1)} kg</strong>
-        </article>
-        <article className="truck-kpi-card">
-          <p className="truck-kpi-label">Returnable Space Reuse</p>
-          <strong>{returnableSpaceReuse}%</strong>
+        <article className="truck-micro-card">
+          <p className="truck-micro-label">Assumptions</p>
+          <strong>
+            {ddiMetrics.assumptions?.slotVolumeM3?.toFixed(2)} m3 / slot | fallback returns ratio {(Number(ddiMetrics.assumptions?.fallbackReturnStopsRatio ?? 0) * 100).toFixed(0)}%
+          </strong>
+          <span className="truck-micro-detail">Used only when explicit return counts are missing in upcoming stops.</span>
         </article>
       </section>
 
@@ -200,12 +190,6 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
       />
 
       <div className="truck-stop-canvas-wrap">
-        <TruckStatusHeatmap
-          manifest={manifest}
-          trackedSlots={trackedSlots}
-          progressStop={progressStop}
-          totalStops={routeStops.length}
-        />
         <TruckCargo3D
           stopData={normalizedStop}
           selectedStopId={safeStop?.stopId ?? normalizedStop?.stopId ?? null}

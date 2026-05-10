@@ -1,4 +1,4 @@
-import { buildGhostZones, buildOperationalKpis, computeLoadStats } from './operationalHeuristics'
+import { buildGhostZones, computeLoadStats } from './operationalHeuristics'
 
 const SLOT_TYPES = new Set(['target_unload', 'full', 'free', 'empty_return'])
 const TYPE_COLORS = {
@@ -206,15 +206,8 @@ export function normalizeStopData(rawStop) {
     ? normalizedMatrixFromSource
     : matrixFromPallets(pallets, rowCount, colCount)
   const loadStats = computeLoadStats({ pallets, matrix })
-  const routePoints = rawStop?.routePoints ?? rawStop?.routeContext?.points ?? []
   const routeDeliveryStatus = rawStop?.routeDeliveryStatus ?? rawStop?.routeContext?.delivery_status ?? []
   const selectedStopIndex = toFiniteNumber(rawStop?.index, 0)
-  const operationalKpis = buildOperationalKpis({
-    routePoints,
-    deliveryStatus: routeDeliveryStatus,
-    loadStats,
-    selectedStopIndex,
-  })
   const ghostZones = buildGhostZones({
     matrix,
     loadStats,
@@ -235,7 +228,6 @@ export function normalizeStopData(rawStop) {
     pallets,
     matrix,
     loadStats,
-    operationalKpis,
     ghostZones,
   }
 }
