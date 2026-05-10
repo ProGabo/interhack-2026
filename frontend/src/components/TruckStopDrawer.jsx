@@ -187,12 +187,20 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
 
       <div className="truck-stop-canvas-wrap">
         <TruckCargo3D
-          items={selectedStop?.stopData?.items ?? []}
-          itemGrid={selectedStop?.stopData?.itemGrid ?? null}
-          selectedStopId={selectedStop?.stopId ?? normalizedStop?.stopId ?? null}
-          selectedStopIndex={selectedStop?.index ?? null}
           stopData={normalizedStop}
-          cargo={selectedStop?.stopData?.cargo ?? normalizedStop?.pallets ?? []}
+          selectedStopId={safeStop?.stopId ?? normalizedStop?.stopId ?? null}
+          selectedStopIndex={safeStop?.index ?? null}
+          cargo={safeStop?.stopData?.cargo ?? normalizedStop?.pallets ?? []}
+          routeContext={safeStop?.routeContext ?? null}
+          deliveryStatus={progressDeliveryStatus}
+          ghostZones={normalizedStop?.ghostZones ?? []}
+          manifest={manifest}
+          progressStop={progressStop}
+          activeStopIndex={Math.max(0, Math.min(routeStops.length, progressStop))}
+          processTransitionTrigger={processTransitionTrigger}
+          progressAction={progressAction}
+          onTrackedSlotsChange={setTrackedSlots}
+          onHighlightReasonChange={setHighlightInsight}
         />
       </div>
 

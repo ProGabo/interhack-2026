@@ -8,55 +8,7 @@ import TruckStopDrawer from './TruckStopDrawer'
 import VoiceAssistant from './VoiceAssistant'
 import mockRoute from '@shared/mock_5_stops.json'
 
-function generateMockCubes(mockRoute) {
-  if (!mockRoute?.stops) return []
-  const cubes = []
-  mockRoute.stops.forEach((stop, stopIndex) => {
-    stop.cargo?.forEach((item) => {
-      for (let i = 0; i < 9; i++) {
-        cubes.push({
-          x: (item.position?.col ?? 0) * 3 + (i % 3),
-          y: (item.position?.row ?? 0) * 3 + Math.floor(i / 3),
-          z: 0,
-          stop_index: stopIndex + 1,
-          product_id: item.product,
-        })
-      }
-    })
-  })
-  return cubes
-}
-
-/* Tag each item with its lifecycle state relative to the currently-viewed stop:
-     • stop_index === currentStopIndex                  → target_unload
-     • stop_index >  currentStopIndex                   → full (still on truck)
-     • stop_index <  currentStopIndex && is_returnable  → empty_return
-     • stop_index <  currentStopIndex                   → dropped (already gone)
-   The 3D position/shape from the DB is preserved untouched — TruckCargo3D
-   renders items at their lattice coords. */
-function classifyItemsForStop(items, currentStopIndex) {
-  if (!Array.isArray(items) || items.length === 0) return []
-  const out = []
-  for (const item of items) {
-    const stop = item?.stop_index
-    let type
-    if (stop === currentStopIndex) type = 'target_unload'
-    else if (stop > currentStopIndex) type = 'full'
-    else if (item?.is_returnable) type = 'empty_return'
-    else continue
-    out.push({ ...item, type })
-  }
-  return out
-}
-
-function buildGoogleMapsUrl(points) {
-  if (!points || points.length < 2) return '#'
-  const origin = `${points[0].lat},${points[0].lng}`
-  const dest = `${points.at(-1).lat},${points.at(-1).lng}`
-  const waypoints = points.slice(1, -1).map((p) => `${p.lat},${p.lng}`).join('|')
-  const base = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${dest}&travelmode=driving`
-  return waypoints ? `${base}&waypoints=${waypoints}` : base
-}
+const FALLBACK_MOCK_ROUTE = { truckId: null, stops: [] }
 
 export default function Dashboard() {
   const FORCE_MOCK_ROUTE = import.meta.env.VITE_FORCE_MOCK_ROUTE === 'true'
@@ -192,13 +144,10 @@ export default function Dashboard() {
       route?.stop_data?.[index] ??
       route?.stopSnapshots?.[index] ??
       null
-    const classifiedItems = classifyItemsForStop(route?.items, index)
     const mergedStopData = {
       ...(legacyStop ?? {}),
       ...(unifiedStop ?? {}),
       cargo: unifiedStop?.cargo ?? legacyStop?.cargo ?? [],
-      items: classifiedItems,
-      itemGrid: route?.item_grid ?? null,
     }
     const point = normalizedRoute?.points?.[index]
     if (!point) {
