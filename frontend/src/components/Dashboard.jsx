@@ -37,7 +37,7 @@ function buildGoogleMapsUrl(points) {
 }
 
 export default function Dashboard() {
-  const FORCE_MOCK_ROUTE = true
+  const FORCE_MOCK_ROUTE = false
   const { driverId, logout } = useAuth()
   const [route, setRoute] = useState(null)
   const [deliveryStatus, setDeliveryStatus] = useState(null)
@@ -270,7 +270,7 @@ export default function Dashboard() {
 
           {normalizedRoute.points.length > 0 && (
             <div className="sidebar-footer">
-              {(route?.cubes || route?.pallets || normalizedRoute.isMock) && (
+              {(route?.items || route?.cubes || route?.pallets || normalizedRoute.isMock) && (
                 <button className="btn-truck-view" onClick={() => setShowTruck(true)}>
                   View truck interior
                 </button>
@@ -287,10 +287,12 @@ export default function Dashboard() {
           )}
         </aside>
 
-        {showTruck && (route?.cubes || route?.pallets || normalizedRoute.isMock) && (
+        {showTruck && (route?.items || route?.cubes || route?.pallets || normalizedRoute.isMock) && (
           <TruckView
             layout={route?.truck_layout ?? { rows: 2, cols: 4 }}
-            cubes={route?.cubes ?? generateMockCubes(mockRoute)}
+            items={route?.items}
+            itemGrid={route?.item_grid}
+            cubes={route?.cubes ?? (route?.items ? null : generateMockCubes(mockRoute))}
             cubeGrid={route?.cube_grid ?? { L: 12, W: 6, H: 1 }}
             pallets={route?.pallets}
             deliveries={route?.deliveries}

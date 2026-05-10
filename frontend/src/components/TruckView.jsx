@@ -2,16 +2,15 @@ import { useMemo, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Edges, Html } from '@react-three/drei'
 
-// One pallet zone is 1.0 × 1.0; cube grid is rows·3 × cols·3 cells, plus
-// optional vertical layers. Sizes tuned for the (cols·3) × (rows·3) sweep
-// the optimizer produces.
+// One pallet zone is 1.0 × 1.0; cube grid is rows·3 × cols·3 cells in legacy
+// renders. New render path uses item_grid {L, W, H} from the backend.
 const PALLET_W = 1.0
 const SLOT     = PALLET_W / 3.2
 const CUBE     = SLOT * 0.86
+const STACK_GAP = 0.005
 const PALLET_H = 0.04
 const SHELL_H  = 1.25
 
-// Distinct, dark-bg-friendly palette indexed by stop number.
 const STOP_COLORS = [
   '#5B8DEF', '#39C19A', '#E0A346', '#D85F8C',
   '#9F7AEA', '#F25F5F', '#48BB78', '#38B2AC',
@@ -19,17 +18,31 @@ const STOP_COLORS = [
 ]
 
 const stopColor = (idx) => STOP_COLORS[(Math.max(0, idx - 1)) % STOP_COLORS.length]
+const RETURNABLE_EDGE = '#F5C24D'
+const NORMAL_EDGE = '#FFFFFF'
 
-/* ── Legacy fallback: derive cubes from `pallets` + `deliveries` when the
-   route doc was seeded by the old script (no optimizer output). ── */
-function deriveCubesFromLegacy(pallets, deliveries) {
+/* Promote a legacy per-cell cube ({x,y,z,stop_index,product_id}) into an item
+   row with 1×1×1 shape so a single render path handles both. */
+function cubeToItem(c) {
+  return {
+    position: { x: c.x, y: c.y, z: c.z },
+    shape: { w_x: 1, w_y: 1, w_z: 1 },
+    stop_index: c.stop_index,
+    product_id: c.product_id,
+    is_returnable: !!c.is_returnable,
+  }
+}
+
+/* Legacy fallback: derive 1×1×1 items from `pallets` + `deliveries` (seeded
+   data path). Each pallet becomes up to 9 unit cubes in a 3×3 floor footprint. */
+function deriveItemsFromLegacy(pallets, deliveries) {
   if (!pallets) return null
   const stopByPallet = {}
   deliveries?.forEach((d, i) => {
-    if (i === 0) return // depot
+    if (i === 0) return
     d.pallet_positions?.forEach((p) => { stopByPallet[`${p.row},${p.col}`] = i })
   })
-  const cubes = []
+  const items = []
   pallets.forEach((pal) => {
     const stopIndex = stopByPallet[`${pal.row},${pal.col}`] ?? 0
     const units = []
@@ -37,23 +50,37 @@ function deriveCubesFromLegacy(pallets, deliveries) {
       for (let i = 0; i < p.quantity; i++) units.push(p.product_id)
     })
     units.slice(0, 9).forEach((pid, i) => {
-      cubes.push({
-        x: pal.col * 3 + (i % 3),
-        y: pal.row * 3 + Math.floor(i / 3),
-        z: 0,
+      items.push({
+        position: { x: pal.col * 3 + (i % 3), y: pal.row * 3 + Math.floor(i / 3), z: 0 },
+        shape: { w_x: 1, w_y: 1, w_z: 1 },
         stop_index: stopIndex,
         product_id: pid,
+        is_returnable: false,
       })
     })
   })
-  return cubes
+  return items
 }
 
-function CubeMesh({ cube, dim, faded, hovered, onEnter, onLeave }) {
-  const color = stopColor(cube.stop_index)
-  const xWorld = (cube.x - (dim.L - 1) / 2) * SLOT
-  const zWorld = (cube.y - (dim.W - 1) / 2) * SLOT
-  const yWorld = PALLET_H + CUBE / 2 + cube.z * (CUBE + 0.005)
+function ItemMesh({ item, dim, faded, hovered, onEnter, onLeave }) {
+  const { x, y, z } = item.position
+  const { w_x, w_y, w_z } = item.shape
+  const color = stopColor(item.stop_index)
+
+  // World-space center of the box. Cell indices are 0..L-1; the lattice is
+  // centered around the truck's center, so subtract (L-1)/2 then add half the
+  // item's footprint to land on its centroid.
+  const xWorld = (x + (w_x - 1) / 2 - (dim.L - 1) / 2) * SLOT
+  const zWorld = (y + (w_y - 1) / 2 - (dim.W - 1) / 2) * SLOT
+  const yWorld =
+    PALLET_H + CUBE / 2 + (z + (w_z - 1) / 2) * (CUBE + STACK_GAP)
+
+  // Box size: w cells worth of slot pitch, minus the inter-cell gap.
+  const sx = (w_x - 1) * SLOT + CUBE
+  const sz = (w_y - 1) * SLOT + CUBE
+  const sy = (w_z - 1) * (CUBE + STACK_GAP) + CUBE
+
+  const edge = item.is_returnable ? RETURNABLE_EDGE : NORMAL_EDGE
 
   return (
     <mesh
@@ -62,7 +89,7 @@ function CubeMesh({ cube, dim, faded, hovered, onEnter, onLeave }) {
       onPointerEnter={(e) => { e.stopPropagation(); onEnter() }}
       onPointerLeave={onLeave}
     >
-      <boxGeometry args={[CUBE, CUBE, CUBE]} />
+      <boxGeometry args={[sx, sy, sz]} />
       <meshStandardMaterial
         color={color}
         roughness={0.55}
@@ -70,7 +97,7 @@ function CubeMesh({ cube, dim, faded, hovered, onEnter, onLeave }) {
         transparent={faded}
         opacity={faded ? 0.18 : 1}
       />
-      <Edges scale={1.001} threshold={15} color="#ffffff" />
+      <Edges scale={1.001} threshold={15} color={edge} />
       {hovered && (
         <Html distanceFactor={18} center>
           <div style={{
@@ -84,8 +111,11 @@ function CubeMesh({ cube, dim, faded, hovered, onEnter, onLeave }) {
             fontFamily: 'Montserrat,sans-serif',
             pointerEvents: 'none',
           }}>
-            Stop {cube.stop_index}
-            {cube.product_id ? ` · ${cube.product_id}` : ''}
+            Stop {item.stop_index}
+            {item.product_id ? ` · ${item.product_id}` : ''}
+            {item.is_returnable ? ' · returnable' : ''}
+            {' · '}
+            {w_x}×{w_y}×{w_z}
           </div>
         </Html>
       )}
@@ -134,7 +164,10 @@ function Floor({ rows, cols }) {
 }
 
 export default function TruckView({
-  layout, cubes, cubeGrid, pallets, deliveries, deliveryStatus,
+  layout,
+  items, itemGrid,
+  cubes, cubeGrid,                      // legacy
+  pallets, deliveries, deliveryStatus,
   points, truckId, onClose,
 }) {
   const [hoverIdx, setHoverIdx] = useState(null)
@@ -142,31 +175,34 @@ export default function TruckView({
   const rows = layout?.rows ?? 2
   const cols = layout?.cols ?? 3
 
-  // Prefer real optimizer output; fall back to deriving from legacy data.
-  const resolvedCubes = useMemo(
-    () => cubes ?? deriveCubesFromLegacy(pallets, deliveries) ?? [],
-    [cubes, pallets, deliveries]
-  )
-  const dim = cubeGrid ?? { L: cols * 3, W: rows * 3, H: 1 }
+  // Resolution priority: real `items` > legacy `cubes` > pallets fallback.
+  const resolvedItems = useMemo(() => {
+    if (items?.length) return items
+    if (cubes?.length) return cubes.map(cubeToItem)
+    return deriveItemsFromLegacy(pallets, deliveries) ?? []
+  }, [items, cubes, pallets, deliveries])
+
+  const dim = itemGrid ?? cubeGrid ?? { L: cols * 3, W: rows * 3, H: 1 }
 
   // Stops present in the truck (ignore depot at index 0).
   const stopIndices = useMemo(() => {
-    const set = new Set(resolvedCubes.map((c) => c.stop_index))
+    const set = new Set(resolvedItems.map((it) => it.stop_index))
     set.delete(0)
     return [...set].sort((a, b) => a - b)
-  }, [resolvedCubes])
+  }, [resolvedItems])
 
-  const totalCubes = resolvedCubes.length
-  const deliveredCubes = resolvedCubes.filter(
-    (c) => deliveryStatus?.[c.stop_index] === 'delivered'
+  // Each item counts as 1 box regardless of shape — the driver's mental model
+  // is "boxes to deliver", not "cells occupied".
+  const totalItems = resolvedItems.length
+  const deliveredItems = resolvedItems.filter(
+    (it) => deliveryStatus?.[it.stop_index] === 'delivered'
   ).length
-  const remaining = totalCubes - deliveredCubes
-  const pct = totalCubes ? Math.round((deliveredCubes / totalCubes) * 100) : 0
+  const remaining = totalItems - deliveredItems
+  const pct = totalItems ? Math.round((deliveredItems / totalItems) * 100) : 0
 
   const span = Math.max(rows, cols)
   const camDist = span * 1.7
 
-  // Pallet slabs for visual structure under the cubes.
   const slabs = []
   for (let r = 0; r < rows; r++)
     for (let c = 0; c < cols; c++) slabs.push({ row: r, col: c })
@@ -207,12 +243,12 @@ export default function TruckView({
               <PalletSlab key={i} row={s.row} col={s.col} rows={rows} cols={cols} />
             ))}
 
-            {resolvedCubes.map((cube, i) => (
-              <CubeMesh
+            {resolvedItems.map((item, i) => (
+              <ItemMesh
                 key={i}
-                cube={cube}
+                item={item}
                 dim={dim}
-                faded={deliveryStatus?.[cube.stop_index] === 'delivered'}
+                faded={deliveryStatus?.[item.stop_index] === 'delivered'}
                 hovered={hoverIdx === i}
                 onEnter={() => setHoverIdx(i)}
                 onLeave={() => setHoverIdx(null)}
@@ -238,7 +274,7 @@ export default function TruckView({
             <div className="truck-progress-bar" style={{ width: `${pct}%` }} />
           </div>
           <div className="truck-stat right">
-            <span className="truck-stat-val">{deliveredCubes} / {totalCubes}</span>
+            <span className="truck-stat-val">{deliveredItems} / {totalItems}</span>
             <span className="truck-stat-label">boxes delivered</span>
           </div>
           <div className="truck-brands">
@@ -252,6 +288,13 @@ export default function TruckView({
                 </span>
               )
             })}
+            <span className="truck-legend-item" style={{ marginLeft: 'auto' }}>
+              <span className="truck-legend-dot" style={{
+                background: 'transparent',
+                border: `2px solid ${RETURNABLE_EDGE}`,
+              }} />
+              returnable
+            </span>
           </div>
         </div>
 

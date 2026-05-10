@@ -34,6 +34,7 @@ from loader import build_travel_matrix, load
 from solver import solve_vrp
 
 SAMPLE = Path(__file__).with_name("sample_request.json")
+PRODUCTS = Path(__file__).with_name("products.json")
 
 
 # --- Request schema (mirrors sample_request.json) ----------------------
@@ -315,6 +316,13 @@ def sample_request():
     if not SAMPLE.exists():
         raise HTTPException(404, "sample_request.json missing")
     return json.loads(SAMPLE.read_text(encoding="utf-8"))
+
+
+@app.get("/products")
+def products():
+    if not PRODUCTS.exists():
+        raise HTTPException(404, "products.json missing")
+    return json.loads(PRODUCTS.read_text(encoding="utf-8"))
 
 
 @app.post("/optimize", response_model=OptimizeResponse)
