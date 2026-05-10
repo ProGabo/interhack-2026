@@ -5,7 +5,7 @@ import { useDriverLocation } from '../hooks/useDriverLocation'
 import RouteMap from './Map'
 import TruckStopDrawer from './TruckStopDrawer'
 import VoiceAssistant from './VoiceAssistant'
-import mockRoute from '@shared/mock_5_stops.json'
+import TruckView from './TruckView'
 
 function buildGoogleMapsUrl(points) {
   if (!points || points.length < 2) return '#'
@@ -23,6 +23,7 @@ export default function Dashboard() {
   const [deliveryStatus, setDeliveryStatus] = useState(null)
   const [selectedStop, setSelectedStop] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [showTruck, setShowTruck] = useState(false)
   const { location: currentLocation } = useDriverLocation(driverId)
 
   useEffect(() => {
@@ -249,6 +250,11 @@ export default function Dashboard() {
 
           {normalizedRoute.points.length > 0 && (
             <div className="sidebar-footer">
+              {(route.cubes || route.pallets) && (
+                <button className="btn-truck-view" onClick={() => setShowTruck(true)}>
+                  View truck interior
+                </button>
+              )}
               <a
                 className="btn-gmaps"
                 href={buildGoogleMapsUrl(normalizedRoute.points)}
@@ -260,6 +266,20 @@ export default function Dashboard() {
             </div>
           )}
         </aside>
+
+        {showTruck && (route?.cubes || route?.pallets) && (
+          <TruckView
+            layout={route.truck_layout}
+            cubes={route.cubes}
+            cubeGrid={route.cube_grid}
+            pallets={route.pallets}
+            deliveries={route.deliveries}
+            deliveryStatus={deliveryStatus}
+            points={route.points}
+            truckId={route.truck_id}
+            onClose={() => setShowTruck(false)}
+          />
+        )}
 
         <main className="map-container">
           {loading ? (

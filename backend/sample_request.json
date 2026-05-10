@@ -1,6 +1,6 @@
 {
-  "request_id": "REQ-2026-05-09-001",
-  "date": "2026-05-09",
+  "request_id": "REQ-2026-05-10-001",
+  "date": "2026-05-10",
 
   "depot": {
     "id": "WH-GR",
@@ -12,8 +12,8 @@
   "fleet": {
     "num_vans": 3,
     "van_type": "8_pallets",
-    "vans_ref": "data/vans.json",
-    "products_ref": "data/products.json"
+    "vans_ref": "vans.json",
+    "products_ref": "products.json"
   },
 
   "drivers": [
