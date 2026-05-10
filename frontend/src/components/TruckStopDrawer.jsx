@@ -94,8 +94,9 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
     [manifest, progressStop, normalizedStop, ddiMetrics, highlightInsight],
   )
   const canProcessStop = progressStop < routeStops.length
-  const returnPayloadDetail = `Used by returns: ${ddiMetrics.returnsVolumeUsed.toFixed(1)} m3`
-  const loadModeDetail = `Order rows ${ddiMetrics.groupedByOrderRows}/${Math.max(ddiMetrics.analyzedRows, 1)} | SKU rows ${ddiMetrics.groupedBySkuRows}/${Math.max(ddiMetrics.analyzedRows, 1)}`
+  const rehandleRisk = Math.max(0, Number(ddiMetrics.blockedRehandleRisk ?? 0))
+  const sideAccessStatus = String(ddiMetrics.sideAccessStatus ?? 'CLEAR')
+  const overflowStatus = ddiMetrics.projectedOverflowRisk ? 'RISK' : 'OK'
   const blockedCoordinates = (ddiMetrics.blockedPallets ?? []).slice(0, 3).map((slot) => slot.coordinate)
   const blockedStackCoordinates = (ddiMetrics.verticalBlockedSlots ?? []).slice(0, 3).map((slot) => slot.coordinate)
 
@@ -134,24 +135,19 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
 
       <section className="truck-kpi-header" aria-label="KPI Impact Header">
         <MetricCard
-          label="Blocked Pallets"
-          value={Math.max(0, Number(ddiMetrics.blockedPalletsCount) || 0)}
-          detail="Later-stop pallets blocking current-stop side unloading."
+          label="Blocked Pallets / Re-handle Risk"
+          value={rehandleRisk}
+          detail={`${Math.max(0, Number(ddiMetrics.blockedPalletsCount) || 0)} lateral blockers + ${Math.max(0, Number(ddiMetrics.extraMoves) || 0)} vertical extra moves.`}
         />
         <MetricCard
-          label="Vertical Extra Moves"
-          value={Math.max(0, Number(ddiMetrics.extraMoves) || 0)}
-          detail={`${Math.max(0, Number(ddiMetrics.blockedVerticalSlotsCount) || 0)} blocked stack slot(s) for current stop.`}
+          label="Side-Access Status"
+          value={sideAccessStatus}
+          detail={`${Math.max(0, Number(ddiMetrics.sideAccessPercent) || 0)}% of current-stop layers remain on side-curtain lanes.`}
         />
         <MetricCard
-          label="Load Balancing"
-          value={ddiMetrics.loadGroupingMode}
-          detail={loadModeDetail}
-        />
-        <MetricCard
-          label="Available Volume for Returns"
-          value={`${Math.max(0, Number(ddiMetrics.returnsVolumeAvailable) || 0).toFixed(1)} m3`}
-          detail={ddiMetrics.projectedOverflowRisk ? `${returnPayloadDetail} | Risk: future overflow` : returnPayloadDetail}
+          label="Capacity Overflow Risk"
+          value={overflowStatus}
+          detail={`Returns pending ${Math.max(0, Number(ddiMetrics.projectedPendingReturnVolume) || 0).toFixed(1)} m3 vs free ${Math.max(0, Number(ddiMetrics.returnsVolumeAvailable) || 0).toFixed(1)} m3.`}
         />
       </section>
       <section className={`truck-recommendation-banner${ddiMetrics.projectedOverflowRisk ? ' is-risk' : ''}`} aria-label="Operational recommendation">
@@ -165,11 +161,11 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
           <span className="truck-micro-detail">Top 3 slots creating lateral or vertical re-handle risk for the current stop.</span>
         </article>
         <article className="truck-micro-card">
-          <p className="truck-micro-label">Assumptions</p>
+          <p className="truck-micro-label">Side Lane Reservation</p>
           <strong>
-            {ddiMetrics.assumptions?.slotVolumeM3?.toFixed(2)} m3 / slot | fallback returns ratio {(Number(ddiMetrics.assumptions?.fallbackReturnStopsRatio ?? 0) * 100).toFixed(0)}%
+            {ddiMetrics.sideAccessDetail}
           </strong>
-          <span className="truck-micro-detail">Used only when explicit return counts are missing in upcoming stops.</span>
+          <span className="truck-micro-detail">Inner lanes should absorb return payload first so both curtains remain reachable.</span>
         </article>
       </section>
 

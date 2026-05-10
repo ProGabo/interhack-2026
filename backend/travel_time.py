@@ -8,6 +8,11 @@ numpy lookup.
 
 from __future__ import annotations
 
+import csv
+import json
+import time
+from dataclasses import dataclass
+from pathlib import Path
 from dataclasses import dataclass
 
 import networkx as nx
@@ -15,6 +20,9 @@ import numpy as np
 import osmnx as ox
 import pyproj
 
+from graph_manager import DEFAULT_COORDS_PATH, get_or_build_graph
+
+DEFAULT_MATRIX_PATH = Path(__file__).with_name("travel_time.npz")
 
 @dataclass
 class TravelMatrix:

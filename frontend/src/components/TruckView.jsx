@@ -88,7 +88,7 @@ function Floor({ rows, cols }) {
 }
 
 export default function TruckView({
-  layout, cubes, cubeGrid, pallets, deliveries, deliveryStatus,
+  layout, cubes, cubeGrid, items, itemGrid, pallets, deliveries, deliveryStatus,
   points, truckId, onClose,
 }) {
   const rows = layout?.rows ?? 2
@@ -100,11 +100,13 @@ export default function TruckView({
       resolveGranularCubePayload({
         cubes,
         cubeGrid,
+        items,
+        itemGrid,
         pallets,
         deliveries,
         layout,
       }),
-    [cubes, cubeGrid, pallets, deliveries, layout],
+    [cubes, cubeGrid, items, itemGrid, pallets, deliveries, layout],
   )
 
   // Stops present in the truck (ignore depot at index 0).

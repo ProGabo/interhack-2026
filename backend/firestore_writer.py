@@ -1,11 +1,16 @@
 """Push solver output into Firestore so the frontend reads it live.
 
-Document shape mirrors `seed/seed.py`:
+Document shape:
 
     routes/{driverId}
-      driver_id, truck_id, truck_layout {rows, cols},
-      points         [{lat, lng, address?}]      ordered route
-      pallets        [{row, col, products[]}]    one entry per occupied slot
+      driver_id, truck_id,
+      truck_layout   {rows, cols}                pallet floor grid
+      item_grid      {L, W, H}                   lattice cells (cube_size_m per van)
+      items          [{position {x,y,z},
+                       shape    {w_x, w_y, w_z},
+                       stop_index, product_id, is_returnable}]
+      points         [{lat, lng, address?}]      ordered route (depot at index 0)
+      pallets        [{row, col, products[]}]    legacy floor-only view
       deliveries     [{pallet_positions[]}]      aligned with points
       windows        [{start, end}]
       service_times  [number]                    minutes per stop
@@ -69,63 +74,104 @@ def _van_layout(van_type: str) -> dict:
     )
 
 
-def _compute_cube_layout(
-    rows: int, cols: int, deliveries_per_stop: list[tuple[int, list[str]]]
+def _van_lattice(van_type: str) -> tuple[int, int, int]:
+    """Lattice dimensions in cells: each axis is van_dim_m / cube_size_m.
+
+    cube_size_m and physical interior dimensions both live in vans.json — keep
+    the source of truth there. Returns (L, W, H) where L is along the truck
+    length, W its depth, H its stacking height.
+    """
+    data = json.loads((_BASE / "vans.json").read_text(encoding="utf-8"))
+    spec = next((v for v in data["van_types"] if v["type"] == van_type), None)
+    if spec is None:
+        raise KeyError(f"unknown van_type: {van_type}")
+    cube = spec["cube_size_m"]
+    return (
+        int(round(spec["length_m"] / cube)),
+        int(round(spec["width_m"]  / cube)),
+        int(round(spec["height_m"] / cube)),
+    )
+
+
+def _compute_item_layout(
+    L: int, W: int, H: int,
+    deliveries_per_stop: list[tuple[int, list[str]]],
+    products: dict,
 ) -> tuple[list[dict], dict]:
-    """Run SmartTruckOptimizer3D to place every cube in a (cols·3, rows·3, 1)
-    grid. Each cube carries the destination `stop_index` (1-based, matches the
-    route doc's `points` index) and a `product_id` (round-robin across the
-    stop's units).
+    """Run SmartTruckOptimizer3D with real product shapes. Returns one entry
+    per *item* (not per cell): each carries an anchor `position` + box `shape`
+    so the frontend can render multi-cell products as single boxes.
 
     `deliveries_per_stop` is an ordered list of (stop_index, [product_id per
     unit]); the optimizer respects that route order so earlier stops are
-    extractable first.
+    extractable first. Every unit of an `is_returnable` product is created as
+    a return-type instance so the optimizer's EMPTY_KEG ablation models the
+    space empties leave behind.
     """
-    L = cols * 3
-    W = rows * 3
-    H = 1
+    counts_per_stop: dict[int, dict[str, int]] = {}
+    for stop_idx, units in deliveries_per_stop:
+        if not units:
+            continue
+        bucket: dict[str, int] = {}
+        for pid in units:
+            bucket[pid] = bucket.get(pid, 0) + 1
+        counts_per_stop[stop_idx] = bucket
 
-    counts: dict[int, int] = {idx: len(prods) for idx, prods in deliveries_per_stop if prods}
-    if not counts:
+    if not counts_per_stop:
         return [], {"L": L, "W": W, "H": H}
 
+    needed_pids = {pid for counts in counts_per_stop.values() for pid in counts}
+    item_shapes = {
+        pid: (
+            int(products[pid]["length_cells"]),
+            int(products[pid]["width_cells"]),
+            int(products[pid]["height_cells"]),
+        )
+        for pid in needed_pids
+    }
+
     capacity = L * W * H
-    total = sum(counts.values())
-    if total > capacity:
-        # The OR-tools capacity model already enforces this; truncate
-        # defensively so the optimizer never deadlocks.
-        scale = capacity / total
-        counts = {k: max(1, int(v * scale)) for k, v in counts.items()}
+    total_cells = sum(
+        item_shapes[pid][0] * item_shapes[pid][1] * item_shapes[pid][2] * cnt
+        for counts in counts_per_stop.values()
+        for pid, cnt in counts.items()
+    )
+    if total_cells > capacity:
+        # OR-tools VRP capacity already enforces this; defensive scaling so the
+        # lattice optimizer doesn't deadlock if a request slips through.
+        scale = capacity / total_cells
+        counts_per_stop = {
+            stop_idx: {pid: max(1, int(cnt * scale)) for pid, cnt in counts.items()}
+            for stop_idx, counts in counts_per_stop.items()
+        }
 
-    route_ids = [idx for idx, _ in deliveries_per_stop if counts.get(idx, 0) > 0]
+    returns_per_stop = {
+        stop_idx: {pid: cnt for pid, cnt in counts.items() if products[pid]["is_returnable"]}
+        for stop_idx, counts in counts_per_stop.items()
+    }
 
-    # Lazy import keeps the API importable when numpy is missing in tests.
+    route_ids = [stop_idx for stop_idx, _ in deliveries_per_stop if stop_idx in counts_per_stop]
+
     import numpy as np  # noqa: F401  (used by SmartTruckOptimizer3D)
     from optimize_box import SmartTruckOptimizer3D
 
-    opt = SmartTruckOptimizer3D(L, W, H, route_ids)
-    initial = opt.generate_initial_state(counts)
+    opt = SmartTruckOptimizer3D(L, W, H, route_ids, item_shapes=item_shapes)
+    initial = opt.generate_initial_state(counts_per_stop, returns_per_stop)
     final, _, _ = opt.optimize(initial, steps=2000)
+    opt._sync_instances_to_state(final)
 
-    product_streams = {idx: list(prods) for idx, prods in deliveries_per_stop}
-    consumed = {idx: 0 for idx in counts}
-
-    cubes: list[dict] = []
-    for x in range(L):
-        for y in range(W):
-            for z in range(H):
-                stop_idx = int(final[x, y, z])
-                if stop_idx == 0:
-                    continue
-                stream = product_streams.get(stop_idx, [])
-                pid = stream[consumed[stop_idx] % len(stream)] if stream else None
-                consumed[stop_idx] += 1
-                cubes.append({
-                    "x": x, "y": y, "z": z,
-                    "stop_index": stop_idx,
-                    "product_id": pid,
-                })
-    return cubes, {"L": L, "W": W, "H": H}
+    items: list[dict] = []
+    for inst in opt._instances.values():
+        x, y, z = inst.anchor
+        lx, ly, lz = inst.shape
+        items.append({
+            "position": {"x": int(x), "y": int(y), "z": int(z)},
+            "shape": {"w_x": int(lx), "w_y": int(ly), "w_z": int(lz)},
+            "stop_index": int(inst.client),
+            "product_id": inst.item_type,
+            "is_returnable": bool(products[inst.item_type]["is_returnable"]),
+        })
+    return items, {"L": L, "W": W, "H": H}
 
 
 def _pallets_for_stop(stop: dict, products: dict, capacity_cells: int = 9) -> list[list[dict]]:
@@ -169,6 +215,7 @@ def build_route_doc(
     """Translate one VanPlan into the Firestore route document shape."""
     layout = _van_layout(van_type)
     rows, cols = layout["rows"], layout["cols"]
+    L, W, H = _van_lattice(van_type)
     products = {p["id"]: p for p in json.loads((_BASE / "products.json").read_text())["products"]}
     by_id = {s["id"]: s for s in request_stops}
 
@@ -209,14 +256,14 @@ def build_route_doc(
             units.extend([line["product_id"]] * line["qty"])
         deliveries_per_stop.append((stop_idx, units))
 
-    cubes, cube_grid = _compute_cube_layout(rows, cols, deliveries_per_stop)
+    items, item_grid = _compute_item_layout(L, W, H, deliveries_per_stop, products)
 
     return {
         "driver_id": driver_id,
         "truck_id": truck_id,
         "truck_layout": layout,
-        "cube_grid": cube_grid,
-        "cubes": cubes,
+        "item_grid": item_grid,
+        "items": items,
         "points": points,
         "pallets": pallets,
         "deliveries": deliveries,

@@ -127,6 +127,7 @@ function createLayerRecord({
       status: 'empty',
       assignment: 'Reserved empty layer',
       upcomingSequence: null,
+      sequence: null,
       product: null,
       reason: '',
       label: `Layer ${layerIndex + 1} empty`,
@@ -159,6 +160,7 @@ function createLayerRecord({
     status,
     assignment,
     upcomingSequence: status === 'active' ? sequence : null,
+    sequence,
     product: source?.product ?? null,
     reason,
     label,
@@ -166,6 +168,49 @@ function createLayerRecord({
     stopSequences: [sequence],
     type: source?.type ?? 'full',
     isCurrentStop: status === 'active' && sequence === Number(progressStop) + 1,
+  }
+}
+
+function computeSideAccessStatus({ manifest = { layeredSlots: [], maxCol: 0 }, progressStop = 0 } = {}) {
+  const layeredSlots = Array.isArray(manifest?.layeredSlots) ? manifest.layeredSlots : []
+  const maxCol = Number.isFinite(manifest?.maxCol) ? manifest.maxCol : 0
+  const currentSequence = Number(progressStop) + 1
+  const activeNow = layeredSlots
+    .flatMap((slot) => (slot?.layers ?? []).map((layer) => ({ ...layer, row: slot.row, col: slot.col })))
+    .filter((layer) => layer.status === 'active' && Number(layer.upcomingSequence) === currentSequence)
+
+  const returnLayers = layeredSlots
+    .flatMap((slot) => (slot?.layers ?? []).map((layer) => ({ ...layer, row: slot.row, col: slot.col })))
+    .filter((layer) => layer.status === 'return_assigned')
+
+  const activeEdgeCount = activeNow.filter((layer) => layer.col === 0 || layer.col === maxCol).length
+  const activeCenterCount = activeNow.length - activeEdgeCount
+  const returnCenterCount = returnLayers.filter((layer) => layer.col !== 0 && layer.col !== maxCol).length
+  const returnEdgeCount = returnLayers.length - returnCenterCount
+  const edgeAccessPercent = activeNow.length > 0
+    ? Math.round((activeEdgeCount / activeNow.length) * 100)
+    : 100
+
+  const sideAccessStatus = activeCenterCount > 0
+    ? 'BLOCKED'
+    : returnEdgeCount > 0
+      ? 'AT RISK'
+      : 'CLEAR'
+
+  const detail = sideAccessStatus === 'BLOCKED'
+    ? `${activeCenterCount} current-stop layer(s) sit in center lanes and may force re-handle.`
+    : sideAccessStatus === 'AT RISK'
+      ? `${returnEdgeCount} return layer(s) consume side curtains; keep future returns in center lanes.`
+      : 'Side curtains remain free while center lanes absorb return layers.'
+
+  return {
+    sideAccessStatus,
+    edgeAccessPercent,
+    activeEdgeCount,
+    activeCenterCount,
+    returnCenterCount,
+    returnEdgeCount,
+    detail,
   }
 }
 
@@ -434,19 +479,21 @@ export function buildDDIMetrics({
   const blockedPallets = computeBlockedPalletDetails({ manifest, progressStop })
   const verticalBlockedSlots = computeVerticalBlockedDetails({ manifest, progressStop })
   const extraMoves = verticalBlockedSlots.reduce((sum, slot) => sum + Number(slot?.extraMoves ?? 0), 0)
-  const grouping = computeLoadGroupingMode({ manifest })
   const returnPayload = computeReturnPayload({ manifest, routeStops, progressStop })
+  const sideAccess = computeSideAccessStatus({ manifest, progressStop })
   const blockedPalletsCount = blockedPallets.length
   const blockedVerticalSlotsCount = verticalBlockedSlots.length
+  const blockedRehandleRisk = blockedPalletsCount + extraMoves
   const slotVolumeM3 = Number(HEURISTIC_CONSTANTS.slotVolumeM3.toFixed(2))
   const fallbackReturnStopsRatio = HEURISTIC_CONSTANTS.fallbackReturnStopsRatio
   const recommendation = returnPayload.projectedOverflowRisk
     ? `Overflow risk: reserve at least ${Math.max(1, returnPayload.projectedPendingReturnSlots - returnPayload.emptySlots)} extra return slot(s) before stop ${Math.min(routeStops.length, progressStop + 2)}.`
-    : extraMoves > 0
-      ? `Blocked Slot / Re-handle Risk: ${blockedVerticalSlotsCount} slot(s) blocked by top layers. Plan ${extraMoves} extra move(s) before unloading the current stop.`
-    : blockedPalletsCount > 0
-      ? `Unload sequence warning: prioritize ${Math.min(blockedPalletsCount, 3)} blocked pallet(s) first to avoid lateral rehandles.`
-      : 'Layout looks feasible: maintain current sequence and keep lateral curtains clear.'
+    : blockedRehandleRisk > 0
+      ? `Re-handle risk: ${blockedPalletsCount} blocked pallet lane(s) and ${extraMoves} vertical move(s) are required before full unload at this stop.`
+      : sideAccess.sideAccessStatus !== 'CLEAR'
+        ? `Side-access warning: ${sideAccess.detail}`
+        : 'Physical layout is executable: current-stop pallets stay side-accessible and return layers remain reserved in center lanes.'
+  const overflowDelta = Number((returnPayload.projectedPendingReturnVolume - returnPayload.returnsVolumeAvailable).toFixed(2))
 
   return {
     blockedPalletsCount,
@@ -454,16 +501,18 @@ export function buildDDIMetrics({
     blockedVerticalSlotsCount,
     verticalBlockedSlots,
     extraMoves,
-    loadGroupingMode: grouping.loadGroupingMode,
-    groupedByOrderRows: grouping.groupedByOrderRows,
-    groupedBySkuRows: grouping.groupedBySkuRows,
-    analyzedRows: grouping.analyzedRows,
+    blockedRehandleRisk,
     returnsVolumeUsed: returnPayload.returnsVolumeUsed,
     returnsVolumeAvailable: returnPayload.returnsVolumeAvailable,
     projectedPendingReturnSlots: returnPayload.projectedPendingReturnSlots,
     projectedPendingReturnVolume: returnPayload.projectedPendingReturnVolume,
     projectedOverflowRisk: returnPayload.projectedOverflowRisk,
-    narrative: buildHybridNarrative({ grouping, blockedPalletsCount }),
+    overflowDeltaM3: overflowDelta,
+    sideAccessStatus: sideAccess.sideAccessStatus,
+    sideAccessPercent: sideAccess.edgeAccessPercent,
+    sideAccessDetail: sideAccess.detail,
+    returnLayersCenter: sideAccess.returnCenterCount,
+    returnLayersEdge: sideAccess.returnEdgeCount,
     recommendation,
     assumptions: {
       slotVolumeM3,
@@ -473,37 +522,44 @@ export function buildDDIMetrics({
   }
 }
 
-export function buildExplainabilityInsights({
-  stopAddress = 'Current stop',
-  loadStats = {},
+function describeSequenceConstraint({ currentSequence, blockers }) {
+  if (!Array.isArray(blockers) || blockers.length === 0) {
+    return `Stop ${currentSequence} pallets remain top-accessible with no vertical blockers.`
+  }
+  const firstBlocker = blockers[0]
+  const blockerSequence = Number(firstBlocker?.sequence ?? 0)
+  return `Stop ${currentSequence} requires lifting layer ${Number(firstBlocker?.layerIndex ?? 0) + 1} from stop ${blockerSequence} first, so the current pallet is reachable without blind re-handling.`
+}
+
+export function buildManifestExplainability({
+  manifest = { slots: [] },
+  progressStop = 0,
   ddiMetrics = {},
-  deliveryStatus = [],
 } = {}) {
-  const deliveredStops = Array.isArray(deliveryStatus)
-    ? deliveryStatus.filter((status) => status === 'delivered').length
-    : 0
-  const totalStops = Math.max(Array.isArray(deliveryStatus) ? deliveryStatus.length : 0, 1)
-  const progressPercent = Math.round((deliveredStops / totalStops) * 100)
-  const clientLabel = String(stopAddress).split(',')[0] ?? 'client'
+  const layeredSlots = Array.isArray(manifest?.layeredSlots) ? manifest.layeredSlots : []
+  const currentSequence = Number(progressStop) + 1
+  const activeNow = layeredSlots
+    .flatMap((slot) => (slot?.layers ?? []).map((layer) => ({ ...layer, row: slot.row, col: slot.col, slotKey: slot.key })))
+    .filter((layer) => layer.status === 'active' && Number(layer.upcomingSequence) === currentSequence)
+  const returnLayers = layeredSlots
+    .flatMap((slot) => (slot?.layers ?? []).map((layer) => ({ ...layer, row: slot.row, col: slot.col })))
+    .filter((layer) => layer.status === 'return_assigned')
+  const blockers = Array.isArray(ddiMetrics?.verticalBlockedSlots) ? ddiMetrics.verticalBlockedSlots : []
+  const blockedLateral = Array.isArray(ddiMetrics?.blockedPallets) ? ddiMetrics.blockedPallets : []
 
-  const insights = [
-    `Current stop focus for ${clientLabel}: ${ddiMetrics.blockedPalletsCount ?? 0} blocked pallets require rehandle before lateral unloading can finish.`,
-  ]
+  const activeSummary = activeNow.length > 0
+    ? `Current stop ${currentSequence} has ${activeNow.length} active layer(s); ${ddiMetrics?.sideAccessPercent ?? 100}% remain on curtain-access lanes.`
+    : `Current stop ${currentSequence} has no pending delivery layers; remaining capacity can be dedicated to returns.`
+  const blockerSummary = blockedLateral.length > 0 || blockers.length > 0
+    ? `Re-handle exposure: ${blockedLateral.length} lateral blocker slot(s) and ${ddiMetrics?.extraMoves ?? 0} vertical move(s) detected.`
+    : 'Re-handle exposure: no lateral or vertical blockers detected for the current unload step.'
+  const sequenceReason = describeSequenceConstraint({ currentSequence, blockers: blockers[0]?.blockers ?? [] })
+  const returnSummary = `Return reservation: ${returnLayers.length} layer(s) assigned, with ${ddiMetrics?.returnLayersCenter ?? 0} in center lanes to preserve side access.`
+  const overflowSummary = ddiMetrics?.projectedOverflowRisk
+    ? `Capacity warning: projected returns exceed free volume by ${Math.max(0, Number(ddiMetrics?.overflowDeltaM3 ?? 0)).toFixed(2)} m3.`
+    : `Capacity status: projected returns fit within remaining free volume (${Number(ddiMetrics?.returnsVolumeAvailable ?? 0).toFixed(2)} m3 available).`
 
-  if (toFiniteNumber(loadStats?.totalVolumeProxyM3, 0) > HEURISTIC_CONSTANTS.highVolumeThresholdM3) {
-    insights.push('Grouping rule: high-volume references are prioritized in center bays to improve truck stability on urban turns.')
-  } else {
-    insights.push('Grouping rule: mixed-client references are kept closer to lateral bays to reduce rehandles on next stops.')
-  }
-
-  if (toFiniteNumber(loadStats?.sideDiffRatio, 0) > HEURISTIC_CONSTANTS.balanceTolerance) {
-    insights.push('Balance correction: returnables are shifted to the lighter side to avoid side-load imbalance during pickups.')
-  } else {
-    insights.push('Balance status: left-right load remains within tolerance, so return zones can stay near central-low lanes.')
-  }
-
-  insights.push(`Operational snapshot: ${ddiMetrics.occupancyPercent ?? 0}% occupancy, route progress ${progressPercent}%, and ${ddiMetrics.returnsVolumeAvailable ?? 0} m3 still free for incoming returnables.`)
-  return insights
+  return [activeSummary, blockerSummary, sequenceReason, returnSummary, overflowSummary]
 }
 
 export function buildRouteProgressStatus(totalStops = 0, progressStop = 0) {
@@ -786,53 +842,6 @@ export function buildSlotManifest({
   }
 }
 
-export function buildManifestExplainability({
-  manifest = { slots: [] },
-  progressStop = 0,
-  loadStats = {},
-  ddiMetrics = {},
-} = {}) {
-  const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
-  const currentSequence = Number(progressStop) + 1
-  const activeNow = slots.filter(
-    (slot) => slot.status === 'active' && slot.upcomingSequence === currentSequence,
-  )
-  const activeSlots = activeNow.length > 0 ? activeNow : slots.filter((slot) => slot.status === 'active')
-  const returnSlots = slots.filter((slot) => slot.status === 'return_assigned')
-  const lateralActive = activeSlots.filter(
-    (slot) => slot.col === 0 || slot.col === manifest.maxCol,
-  )
-  const goldenZonePercent = activeSlots.length > 0
-    ? Math.round((lateralActive.length / activeSlots.length) * 100)
-    : 80
-  const reasonLines = activeSlots
-    .map((slot) => slot.reason)
-    .filter((reason) => String(reason ?? '').trim().length > 0)
-    .slice(0, 2)
-  const reverseReason = returnSlots[0]?.reason
-    ?? 'Space reserved here for the empty crates you will pick up.'
-  const ergonomicsReason = 'Placed on the side so you do not have to climb in.'
-  const stackingReason = 'By stacking Stop 3 deliveries beneath Stop 2, we eliminate vertical re-handling while maintaining lateral access via the side lanes.'
-  const stabilityReason = 'Heaviest items at the bottom for safety.'
-
-  if (reasonLines.length > 0) {
-    return [
-      ddiMetrics?.narrative ?? buildHybridNarrative({}),
-      ...reasonLines,
-      ergonomicsReason,
-      stackingReason,
-      stabilityReason,
-      reverseReason,
-    ]
-  }
-  return [
-    ddiMetrics?.narrative ?? 'Hybrid Loading: early pallets are grouped for warehouse speed and next-stop pallets remain side-accessible for driver efficiency.',
-    ergonomicsReason,
-    stackingReason,
-    stabilityReason,
-    reverseReason,
-  ]
-}
 
 export function computeAccessibilityIndex({
   manifest = { slots: [], maxCol: 0 },

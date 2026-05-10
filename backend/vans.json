@@ -32,5 +32,6 @@
       "pallet_height_m": 0.15,
       "max_payload_kg": 2200
     }
-  ]
+  ],
+  "comments": "cube size = 0.4 / 5, Input format for generate_initial_state:  orders  = {client_id: {item_type: total_count}},  returns = {client_id: {item_type: returns_count}}"
 }

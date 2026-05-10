@@ -22,6 +22,40 @@ function normalizeCube(cube, index = 0) {
   }
 }
 
+function expandItemsToCubes(items) {
+  if (!Array.isArray(items) || items.length === 0) return []
+
+  const expanded = []
+  items.forEach((item, itemIndex) => {
+    const baseX = toInt(item?.position?.x ?? item?.x, 0)
+    const baseY = toInt(item?.position?.y ?? item?.y, 0)
+    const baseZ = toInt(item?.position?.z ?? item?.z, 0)
+    const spanX = Math.max(1, toInt(item?.shape?.w_x ?? item?.w_x, 1))
+    const spanY = Math.max(1, toInt(item?.shape?.w_y ?? item?.w_y, 1))
+    const spanZ = Math.max(1, toInt(item?.shape?.w_z ?? item?.w_z, 1))
+    const stopIndex = normalizeStopIndex(item?.stop_index)
+    const productId = item?.product_id ?? item?.id ?? `item-${itemIndex + 1}`
+    const isReverse = Boolean(item?.is_returnable)
+
+    for (let dx = 0; dx < spanX; dx += 1) {
+      for (let dy = 0; dy < spanY; dy += 1) {
+        for (let dz = 0; dz < spanZ; dz += 1) {
+          expanded.push({
+            x: baseX + dx,
+            y: baseY + dy,
+            z: baseZ + dz,
+            stop_index: stopIndex,
+            product_id: productId,
+            is_reverse: isReverse,
+          })
+        }
+      }
+    }
+  })
+
+  return expanded
+}
+
 function inferCubeGrid(cubes, cubeGrid, layout) {
   if (cubeGrid && Number.isFinite(cubeGrid?.L) && Number.isFinite(cubeGrid?.W) && Number.isFinite(cubeGrid?.H)) {
     return {
@@ -111,6 +145,8 @@ function deriveCubesFromCargo(cargo, selectedStopIndex = 0) {
 export function resolveGranularCubePayload({
   cubes,
   cubeGrid,
+  items,
+  itemGrid,
   pallets,
   deliveries,
   cargo,
@@ -118,12 +154,20 @@ export function resolveGranularCubePayload({
   selectedStopIndex = 0,
 }) {
   const normalizedIncoming = Array.isArray(cubes) ? cubes.map(normalizeCube).filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y) && Number.isFinite(item.z)) : []
-  const legacy = normalizedIncoming.length > 0 ? [] : deriveCubesFromLegacy(pallets, deliveries)
-  const cargoFallback = normalizedIncoming.length > 0 || legacy.length > 0 ? [] : deriveCubesFromCargo(cargo, selectedStopIndex)
-  const resolved = normalizedIncoming.length > 0 ? normalizedIncoming : legacy.length > 0 ? legacy : cargoFallback
+  const itemDerived = normalizedIncoming.length > 0 ? [] : expandItemsToCubes(items)
+  const legacy = normalizedIncoming.length > 0 || itemDerived.length > 0 ? [] : deriveCubesFromLegacy(pallets, deliveries)
+  const cargoFallback = normalizedIncoming.length > 0 || itemDerived.length > 0 || legacy.length > 0 ? [] : deriveCubesFromCargo(cargo, selectedStopIndex)
+  const resolved =
+    normalizedIncoming.length > 0
+      ? normalizedIncoming
+      : itemDerived.length > 0
+        ? itemDerived
+        : legacy.length > 0
+          ? legacy
+          : cargoFallback
 
   return {
     cubes: resolved,
-    cubeGrid: inferCubeGrid(resolved, cubeGrid, layout),
+    cubeGrid: inferCubeGrid(resolved, cubeGrid ?? itemGrid, layout),
   }
 }

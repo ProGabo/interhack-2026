@@ -1,30 +1,10 @@
 import { useState, useRef } from 'react'
-import Anthropic from '@anthropic-ai/sdk'
-
-const client = new Anthropic({
-  apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY,
-  dangerouslyAllowBrowser: true,
-})
-
-const ACTION_SCHEMA = {
-  type: 'object',
-  properties: {
-    action: {
-      type: 'string',
-      enum: ['mark_delivered', 'next_stop', 'navigate', 'status', 'unknown'],
-    },
-    response: { type: 'string' },
-  },
-  required: ['action', 'response'],
-  additionalProperties: false,
-}
 
 const STATES = { IDLE: 'idle', LISTENING: 'listening', PROCESSING: 'processing', SPEAKING: 'speaking' }
 
 function buildContext(route, deliveryStatus, canToggle) {
   if (!route || !deliveryStatus) return 'No route loaded.'
   const firstPending = deliveryStatus.findIndex((s) => s === 'pending')
-  const delivered = deliveryStatus.filter((s) => s === 'delivered').length
   const nextStop = firstPending >= 0 ? route.points[firstPending] : null
   const timeWindow = firstPending >= 0 ? route.windows?.[firstPending] : null
   const serviceTime = firstPending >= 0 ? route.service_times?.[firstPending] : null
@@ -32,7 +12,6 @@ function buildContext(route, deliveryStatus, canToggle) {
 
   return [
     `Truck: ${route.truck_id}`,
-    `Progress: ${delivered} of ${route.points.length} stops delivered`,
     nextStop ? `Next stop (#${firstPending + 1}): ${nextStop.address}` : 'All stops completed',
     timeWindow ? `Delivery window: ${timeWindow.start} – ${timeWindow.end}` : '',
     serviceTime != null ? `Expected service time: ${serviceTime} min` : '',
@@ -41,28 +20,13 @@ function buildContext(route, deliveryStatus, canToggle) {
 }
 
 async function askClaude(transcript, context) {
-  const system = `You are a hands-free voice assistant for Damm Motion delivery drivers.
-
-Current route status:
-${context}
-
-Based on what the driver said, decide the best action and give a short spoken reply (max 2 sentences).
-Respond in the same language the driver used. Be concise — this will be read aloud.`
-
-  const response = await client.messages.create({
-    model: 'claude-haiku-4-5',
-    max_tokens: 200,
-    system,
-    messages: [{ role: 'user', content: transcript }],
-    output_config: {
-      format: {
-        type: 'json_schema',
-        schema: ACTION_SCHEMA,
-      },
-    },
+  const res = await fetch('http://localhost:8000/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transcript, context })
   })
-
-  return JSON.parse(response.content[0].text)
+  if (!res.ok) throw new Error('Backend chat error')
+  return res.json()
 }
 
 export default function VoiceAssistant({ route, deliveryStatus, canToggle, onMarkDelivered }) {
@@ -73,26 +37,13 @@ export default function VoiceAssistant({ route, deliveryStatus, canToggle, onMar
 
   async function speak(text) {
     setStatus(STATES.SPEAKING)
-    const apiKey = import.meta.env.VITE_ELEVENLABS_API_KEY
-    const voiceId = import.meta.env.VITE_ELEVENLABS_VOICE_ID
-
     try {
-      const res = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-        {
-          method: 'POST',
-          headers: {
-            'xi-api-key': apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            text,
-            model_id: 'eleven_multilingual_v2',
-            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-          }),
-        }
-      )
-      if (!res.ok) throw new Error('ElevenLabs error')
+      const res = await fetch('http://localhost:8000/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      })
+      if (!res.ok) throw new Error('Backend tts error')
 
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
@@ -127,12 +78,6 @@ export default function VoiceAssistant({ route, deliveryStatus, canToggle, onMar
 
       if (result.action === 'mark_delivered' && firstPending >= 0) {
         onMarkDelivered(firstPending)
-      } else if (result.action === 'navigate' && firstPending >= 0) {
-        const p = route.points[firstPending]
-        window.open(
-          `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving`,
-          '_blank'
-        )
       }
 
       speak(result.response)

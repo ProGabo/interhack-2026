@@ -18,6 +18,30 @@ cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
+def derive_cubes(pallets, deliveries):
+    stop_by_pallet = {}
+    for i, d in enumerate(deliveries):
+        if i == 0: continue
+        for p in d.get("pallet_positions", []):
+            stop_by_pallet[f"{p['row']},{p['col']}"] = i
+            
+    cubes = []
+    for pal in pallets:
+        stop_index = stop_by_pallet.get(f"{pal['row']},{pal['col']}", 0)
+        units = []
+        for prod in pal.get("products", []):
+            units.extend([prod["product_id"]] * prod["quantity"])
+            
+        for i, pid in enumerate(units[:9]):
+            cubes.append({
+                "x": pal["col"] * 3 + (i % 3),
+                "y": pal["row"] * 3 + (i // 3),
+                "z": 0,
+                "stop_index": stop_index,
+                "product_id": pid
+            })
+    return cubes
+
 with open(FAKE_DATA_PATH) as f:
     data = json.load(f)
 
@@ -31,6 +55,13 @@ for driver in data["drivers"]:
     except firebase_admin.exceptions.AlreadyExistsError:
         print(f"  [auth] Already exists:  {email}")
 
+    cubes = derive_cubes(driver["pallets"], driver["deliveries"])
+    cube_grid = {
+        "L": driver["truck_layout"]["cols"] * 3,
+        "W": driver["truck_layout"]["rows"] * 3,
+        "H": 1
+    }
+
     db.collection("routes").document(driver_id).set({
         "driver_id": driver_id,
         "truck_id": driver["truck_id"],
@@ -42,6 +73,8 @@ for driver in data["drivers"]:
         "service_times": driver["service_times"],
         "delivery_status": ["pending"] * len(driver["points"]),
         "status": "pending",
+        "cubes": cubes,
+        "cube_grid": cube_grid,
     })
     print(f"  [db]   Route written for {driver_id}  ({len(driver['points'])} stops)")
 

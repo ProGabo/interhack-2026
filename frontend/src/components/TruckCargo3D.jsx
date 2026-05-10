@@ -47,58 +47,6 @@ function formatFixed(value, digits = 1) {
   return Number(value).toFixed(digits)
 }
 
-// Easy swap point for backend algorithm output later.
-const truckLoadManifestMock = [
-  {
-    id: 'mock-active-1',
-    x: 0,
-    y: 1,
-    z: 0,
-    width: 1,
-    height: 1,
-    depth: 1,
-    type: 'active',
-    label: '14 SKUs',
-    reason: "Stop 1: 14 SKUs placed at Left-Lateral-Floor for zero-climb access.",
-  },
-  {
-    id: 'mock-active-2',
-    x: 1,
-    y: 1,
-    z: 1,
-    width: 1,
-    height: 2,
-    depth: 1,
-    type: 'active',
-    label: '9 SKUs',
-    reason: "Stop 1: 9 SKUs stacked at Right-Lateral-Level 2 for ergonomic side unloading.",
-  },
-  {
-    id: 'mock-future-1',
-    x: 0,
-    y: 0,
-    z: 4,
-    width: 1,
-    height: 1,
-    depth: 1,
-    type: 'future',
-    label: '11 SKUs',
-    reason: 'Stop 2: Stacked on Level 2 to preserve floor space for heavy returnable kegs.',
-  },
-  {
-    id: 'mock-return-1',
-    x: 1,
-    y: 0,
-    z: 8,
-    width: 1,
-    height: 1,
-    depth: 1,
-    type: 'returnable',
-    label: '6 Return SKUs',
-    reason: 'Reverse Logistics: Reserved for empty crates and kegs on return pickup.',
-  },
-]
-
 function getSlotKey(row, col) {
   return `${row}-${col}`
 }
@@ -136,8 +84,11 @@ function getDenseRenderableLayers(layers = [], maxLayers = GRID_LAYERS) {
 }
 
 function classifyVisualState({ stopIndex, activeStopIndex, isReverse = false }) {
+  if (isReverse) {
+    if (Number(stopIndex) < 0) return activeStopIndex > 0 ? 'reverse' : 'future'
+    return stopIndex < activeStopIndex ? 'reverse' : 'past'
+  }
   if (Number(stopIndex) < 0) return 'empty'
-  if (isReverse) return stopIndex < activeStopIndex ? 'reverse' : 'past'
   if (stopIndex < activeStopIndex) return 'past'
   if (stopIndex === activeStopIndex) return 'current'
   return 'future'
@@ -154,8 +105,92 @@ function hasOverlap(startA, sizeA, startB, sizeB) {
   return startA <= endB && startB <= endA
 }
 
-function enrichBoxInteractions(items) {
+function getFootprintCells(item) {
+  const xStart = Math.max(0, Number(item?.x ?? 0))
+  const zStart = Math.max(0, Number(item?.z ?? 0))
+  const yStart = Math.max(0, Number(item?.y ?? 0))
+  const width = Math.max(1, Number(item?.width ?? 1))
+  const depth = Math.max(1, Number(item?.depth ?? 1))
+  const height = Math.max(1, Number(item?.height ?? 1))
+  const cells = []
+  for (let xi = 0; xi < width; xi += 1) {
+    for (let zi = 0; zi < depth; zi += 1) {
+      for (let yi = 0; yi < height; yi += 1) {
+        cells.push({
+          x: xStart + xi,
+          y: yStart + yi,
+          z: zStart + zi,
+        })
+      }
+    }
+  }
+  return cells
+}
+
+function normalizeRenderableBoxes(items = []) {
   const safeItems = Array.isArray(items) ? items : []
+  const nonEmptyOccupancy = new Set()
+  const normalized = []
+
+  const hasSupportAtLayer = (box, layerBelow) => {
+    const xStart = Math.max(0, Number(box?.x ?? 0))
+    const zStart = Math.max(0, Number(box?.z ?? 0))
+    const width = Math.max(1, Number(box?.width ?? 1))
+    const depth = Math.max(1, Number(box?.depth ?? 1))
+    for (let xi = 0; xi < width; xi += 1) {
+      for (let zi = 0; zi < depth; zi += 1) {
+        const belowKey = `${xStart + xi}:${layerBelow}:${zStart + zi}`
+        if (!nonEmptyOccupancy.has(belowKey)) return false
+      }
+    }
+    return true
+  }
+
+  safeItems.forEach((item) => {
+    const draft = {
+      ...item,
+      x: Math.max(0, Math.min(GRID_COLUMNS - 1, Number(item?.x ?? 0))),
+      z: Math.max(0, Math.min(GRID_LENGTH - 1, Number(item?.z ?? 0))),
+      y: Math.max(0, Math.min(GRID_LAYERS - 1, Number(item?.y ?? 0))),
+      width: Math.max(1, Number(item?.width ?? 1)),
+      depth: Math.max(1, Number(item?.depth ?? 1)),
+      height: Math.max(1, Number(item?.height ?? 1)),
+      supportAdjusted: false,
+      collisionAdjusted: false,
+    }
+    draft.width = Math.min(draft.width, GRID_COLUMNS - draft.x)
+    draft.depth = Math.min(draft.depth, GRID_LENGTH - draft.z)
+    draft.height = Math.min(draft.height, GRID_LAYERS - draft.y)
+
+    if (draft.type !== 'empty') {
+      while (draft.y > 0 && !hasSupportAtLayer(draft, draft.y - 1)) {
+        draft.y -= 1
+        draft.supportAdjusted = true
+      }
+
+      let attempts = 0
+      while (attempts < GRID_LAYERS) {
+        const occupiedCells = getFootprintCells(draft)
+        const hasCollision = occupiedCells.some((cell) => nonEmptyOccupancy.has(`${cell.x}:${cell.y}:${cell.z}`))
+        if (!hasCollision) break
+        if (draft.y > 0) {
+          draft.y -= 1
+          draft.collisionAdjusted = true
+          attempts += 1
+          continue
+        }
+        break
+      }
+
+      getFootprintCells(draft).forEach((cell) => nonEmptyOccupancy.add(`${cell.x}:${cell.y}:${cell.z}`))
+    }
+    normalized.push(draft)
+  })
+  return normalized
+}
+
+function enrichBoxInteractions(items) {
+  const safeItems = normalizeRenderableBoxes(items)
   return safeItems.map((item) => {
     const blockedByStackAbove = safeItems.some((candidate) => {
       if (candidate?.id === item?.id) return false
@@ -277,7 +312,7 @@ function buildTruckLoadManifest({
   const layeredSlots = Array.isArray(manifest?.layeredSlots) ? manifest.layeredSlots : []
   const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
   if (layeredSlots.length === 0 && slots.length === 0) {
-    return truckLoadManifestMock
+    return []
   }
 
   const byKey = new Map(normalizeCargoItems(cargo).map((item) => [getSlotKey(item.row, item.col), item]))
@@ -304,8 +339,11 @@ function buildTruckLoadManifest({
         const type = status === 'active' ? 'active' : status === 'return_assigned' ? 'returnable' : 'empty'
         const skuCount = Math.max(0, Number(layer?.skuCount ?? item?.skuCount ?? 0))
         const label = layer?.label ?? (type === 'empty' ? 'Available layer' : `${Math.max(1, skuCount)} SKUs`)
-        const stopSequence = Number(layer?.upcomingSequence)
-        const stopIndex = Number.isFinite(stopSequence) ? Math.max(0, stopSequence - 1) : -1
+        const stopSequence = Number(layer?.upcomingSequence ?? layer?.sequence)
+        const fallbackReturnStop = Math.max(0, Number(progressStop) - 1)
+        const stopIndex = Number.isFinite(stopSequence)
+          ? Math.max(0, stopSequence - 1)
+          : type === 'returnable' ? fallbackReturnStop : -1
         const defaultReason = type === 'empty'
           ? 'Free vertical capacity for reverse logistics.'
           : `Stop ${layer?.upcomingSequence ?? progressStop + 1}: ${label} aligned for side-curtain unloading order.`
@@ -902,9 +940,11 @@ export default function TruckCargo3D({
       })),
     [granularPayload.cubes, effectiveActiveStopIndex],
   )
-  const hasManifestData = classifiedManifestBoxes.length > 0
+  const hasManifestData = Array.isArray(manifest?.layeredSlots)
+    ? manifest.layeredSlots.length > 0
+    : Array.isArray(manifest?.slots) && manifest.slots.length > 0
   const hasScheduleDrivenData = classifiedScheduleBoxes.length > 0
-  const useGranularMode = !hasScheduleDrivenData && granularPayload.cubes.length > 0
+  const useGranularMode = false
   const renderBoxes = hasManifestData
     ? classifiedManifestBoxes
     : hasScheduleDrivenData
@@ -1065,3 +1105,5 @@ export default function TruckCargo3D({
     </div>
   )
 }
+
+export { classifyVisualState, buildTruckLoadManifest, normalizeRenderableBoxes }

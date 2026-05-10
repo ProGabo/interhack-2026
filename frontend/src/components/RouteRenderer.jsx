@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { useMap, useMapsLibrary } from '@vis.gl/react-google-maps'
+import { useMap } from '@vis.gl/react-google-maps'
 
 // Straight gray lines drawn over completed segments — no extra API call
 export function CompletedSegments({ points, deliveryStatus }) {
@@ -36,40 +36,38 @@ export function CompletedSegments({ points, deliveryStatus }) {
   return null
 }
 
-// Road-following colored route starting from the first pending stop
+// Active segment polyline starting from the first pending stop
 export function ActiveDirections({ points, deliveryStatus, color }) {
   const map = useMap()
-  const routesLib = useMapsLibrary('routes')
+  const activeLineRef = useRef(null)
 
   useEffect(() => {
-    if (!routesLib || !map || !Array.isArray(points) || points.length < 2) return
-
-    const renderer = new routesLib.DirectionsRenderer({
-      suppressMarkers: true,
-      polylineOptions: { strokeColor: color, strokeWeight: 5, strokeOpacity: 0.85 },
-    })
-    renderer.setMap(map)
+    if (!map || !window.google || !Array.isArray(points) || points.length < 2) return
 
     const firstPending = deliveryStatus ? deliveryStatus.findIndex((s) => s === 'pending') : 0
-    if (firstPending !== -1) {
-      // Start from the driver's current position (last delivered stop), not the next pending one
-      const remaining = firstPending > 0 ? points.slice(firstPending - 1) : points
-      if (remaining.length >= 2) {
-        const service = new routesLib.DirectionsService()
-        service.route(
-          {
-            origin: { lat: remaining[0].lat, lng: remaining[0].lng },
-            destination: { lat: remaining.at(-1).lat, lng: remaining.at(-1).lng },
-            waypoints: remaining.slice(1, -1).map((p) => ({ location: { lat: p.lat, lng: p.lng }, stopover: true })),
-            travelMode: 'DRIVING',
-          },
-          (result, status) => { if (status === 'OK') renderer.setDirections(result) }
-        )
-      }
+    const remaining = firstPending > 0 ? points.slice(firstPending - 1) : points
+
+    if (activeLineRef.current) {
+      activeLineRef.current.setMap(null)
+      activeLineRef.current = null
+    }
+    if (firstPending !== -1 && remaining.length >= 2) {
+      activeLineRef.current = new window.google.maps.Polyline({
+        path: remaining.map((point) => ({ lat: point.lat, lng: point.lng })),
+        strokeColor: color,
+        strokeOpacity: 0.85,
+        strokeWeight: 5,
+        map,
+      })
     }
 
-    return () => renderer.setMap(null)
-  }, [routesLib, map, points, deliveryStatus, color])
+    return () => {
+      if (activeLineRef.current) {
+        activeLineRef.current.setMap(null)
+        activeLineRef.current = null
+      }
+    }
+  }, [map, points, deliveryStatus, color])
 
   return null
 }

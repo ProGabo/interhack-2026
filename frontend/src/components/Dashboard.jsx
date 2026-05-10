@@ -10,17 +10,8 @@ import mockRoute from '@shared/mock_5_stops.json'
 
 const FALLBACK_MOCK_ROUTE = { truckId: null, stops: [] }
 
-function buildGoogleMapsUrl(points) {
-  if (!points || points.length < 2) return '#'
-  const origin = `${points[0].lat},${points[0].lng}`
-  const dest = `${points.at(-1).lat},${points.at(-1).lng}`
-  const waypoints = points.slice(1, -1).map((p) => `${p.lat},${p.lng}`).join('|')
-  const base = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${dest}&travelmode=driving`
-  return waypoints ? `${base}&waypoints=${waypoints}` : base
-}
-
 export default function Dashboard() {
-  const FORCE_MOCK_ROUTE = true
+  const FORCE_MOCK_ROUTE = import.meta.env.VITE_FORCE_MOCK_ROUTE === 'true'
   const fallbackMockRoute = mockRoute ?? FALLBACK_MOCK_ROUTE
   const { driverId, logout } = useAuth()
   const [route, setRoute] = useState(null)
@@ -235,9 +226,6 @@ export default function Dashboard() {
                         {normalizedRoute.serviceTimes[i]} min
                       </div>
                     )}
-                    <div className="stop-coords">
-                      {point.lat.toFixed(4)}, {point.lng.toFixed(4)}
-                    </div>
                   </div>
                   <button
                     className={`btn-deliver${delivered ? ' done' : ''}`}
@@ -258,28 +246,22 @@ export default function Dashboard() {
 
           {normalizedRoute.points.length > 0 && (
             <div className="sidebar-footer">
-              {(activeTruckRoute?.cubes || activeTruckRoute?.pallets) && (
+              {(activeTruckRoute?.cubes || activeTruckRoute?.items || activeTruckRoute?.pallets) && (
                 <button className="btn-truck-view" onClick={() => setShowTruck(true)}>
                   View truck interior
                 </button>
               )}
-              <a
-                className="btn-gmaps"
-                href={buildGoogleMapsUrl(normalizedRoute.points)}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open in Google Maps ↗
-              </a>
             </div>
           )}
         </aside>
 
-        {showTruck && (activeTruckRoute?.cubes || activeTruckRoute?.pallets) && (
+        {showTruck && (activeTruckRoute?.cubes || activeTruckRoute?.items || activeTruckRoute?.pallets) && (
           <TruckView
             layout={activeTruckRoute?.truck_layout}
             cubes={activeTruckRoute?.cubes}
             cubeGrid={activeTruckRoute?.cube_grid}
+            items={activeTruckRoute?.items}
+            itemGrid={activeTruckRoute?.item_grid}
             pallets={activeTruckRoute?.pallets}
             deliveries={activeTruckRoute?.deliveries}
             deliveryStatus={normalizedRoute.deliveryStatus}

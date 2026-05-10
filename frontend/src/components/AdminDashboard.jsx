@@ -3,6 +3,7 @@ import { Map, AdvancedMarker, useMap } from '@vis.gl/react-google-maps'
 import { useAuth } from '../context/AuthContext'
 import { subscribeToRoutes } from '../firebase'
 import { CompletedSegments, ActiveDirections } from './RouteRenderer'
+import AdminRouteCreator from './AdminRouteCreator'
 
 const COLORS = ['#C41230', '#2563EB', '#059669', '#D97706', '#7C3AED']
 
@@ -118,6 +119,7 @@ export default function AdminDashboard() {
   const { logout } = useAuth()
   const [routes, setRoutes] = useState([])
   const [selectedId, setSelectedId] = useState(null)
+  const [view, setView] = useState('fleet') // 'fleet' | 'create'
 
   useEffect(() => {
     return subscribeToRoutes(
@@ -125,6 +127,10 @@ export default function AdminDashboard() {
       (err) => console.error('Fleet subscription error:', err)
     )
   }, [])
+
+  if (view === 'create') {
+    return <AdminRouteCreator onBack={() => setView('fleet')} />
+  }
 
   const visibleRoutes = selectedId
     ? routes.filter((r) => r.driver_id === selectedId)
@@ -144,7 +150,10 @@ export default function AdminDashboard() {
             : <>Fleet: <span>{routes.length} truck{routes.length !== 1 ? 's' : ''}</span></>
           }
         </div>
-        <button className="btn-logout" onClick={logout}>Log out</button>
+        <div className="rc-nav-actions">
+          <button className="btn-create-route" onClick={() => setView('create')}>+ Create route</button>
+          <button className="btn-logout" onClick={logout}>Log out</button>
+        </div>
       </nav>
       <div className="dashboard-body">
         <main className="map-container">
