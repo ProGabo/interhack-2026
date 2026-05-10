@@ -17,7 +17,7 @@ function buildGoogleMapsUrl(points) {
 }
 
 export default function Dashboard() {
-  const FORCE_MOCK_ROUTE = true
+  const FORCE_MOCK_ROUTE = false
   const { driverId, logout } = useAuth()
   const [route, setRoute] = useState(null)
   const [deliveryStatus, setDeliveryStatus] = useState(null)

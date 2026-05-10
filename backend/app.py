@@ -15,8 +15,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
+import os
+import httpx
+from anthropic import Anthropic
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -97,6 +100,13 @@ class Disruption(BaseModel):
 class WhatIfRequest(BaseModel):
     request: OptimizeRequest
     disruption: Disruption
+
+class ChatRequest(BaseModel):
+    transcript: str
+    context: str
+
+class TTSRequest(BaseModel):
+    text: str
 
 
 # --- Response schema ---------------------------------------------------
@@ -395,6 +405,59 @@ def baseline_endpoint(req: OptimizeRequest) -> OptimizeResponse:
         warehouse_prep=warehouse_prep(plan, body["stops"], stops_by_id),
         firestore_written=0,
     )
+
+@app.post("/api/chat")
+def chat_endpoint(req: ChatRequest):
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+    client = Anthropic(api_key=api_key)
+    system = (
+        "You are a hands-free voice assistant for Damm Motion delivery drivers.\n\n"
+        "Current route status:\n" + req.context + "\n\n"
+        "Based on what the driver said, decide the best action and give a short spoken reply (max 2 sentences).\n"
+        "Respond in the same language the driver used. Be concise — this will be read aloud.\n"
+        "You MUST return ONLY valid JSON matching this schema:\n"
+        "{\n"
+        '  "action": "mark_delivered" | "next_stop" | "navigate" | "status" | "unknown",\n'
+        '  "response": "..."\n'
+        "}"
+    )
+    try:
+        response = client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=200,
+            system=system,
+            messages=[{"role": "user", "content": req.transcript}]
+        )
+        return json.loads(response.content[0].text)
+    except Exception as e:
+        raise HTTPException(500, f"Anthropic API error: {e}")
+
+@app.post("/api/tts")
+def tts_endpoint(req: TTSRequest):
+    api_key = os.environ.get("ELEVENLABS_API_KEY", "")
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+    if not api_key:
+        raise HTTPException(500, "ELEVENLABS_API_KEY not configured")
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "text": req.text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+    }
+    try:
+        with httpx.Client() as client:
+            resp = client.post(url, headers=headers, json=payload, timeout=10.0)
+            resp.raise_for_status()
+            return Response(content=resp.content, media_type="audio/mpeg")
+    except Exception as e:
+        raise HTTPException(500, f"ElevenLabs API error: {e}")
+
 
 
 if __name__ == "__main__":
