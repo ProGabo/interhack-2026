@@ -52,7 +52,8 @@ export function ActiveDirections({ points, deliveryStatus, color }) {
 
     const firstPending = deliveryStatus ? deliveryStatus.findIndex((s) => s === 'pending') : 0
     if (firstPending !== -1) {
-      const remaining = firstPending > 0 ? points.slice(firstPending) : points
+      // Start from the driver's current position (last delivered stop), not the next pending one
+      const remaining = firstPending > 0 ? points.slice(firstPending - 1) : points
       if (remaining.length >= 2) {
         const service = new routesLib.DirectionsService()
         service.route(

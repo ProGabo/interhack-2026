@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { animate } from 'framer-motion'
 import { normalizeStopData } from '../adapters/normalizeStopData'
 import {
   buildManifestExplainability,
+  computeReturnableSpaceReuse,
   buildRouteProgressStatus,
   buildSlotManifest,
 } from '../adapters/operationalHeuristics'
@@ -9,6 +11,18 @@ import TruckCargo3D from './TruckCargo3D'
 import ExplainabilityWidget from './ExplainabilityWidget'
 import RouteProgressSlider from './RouteProgressSlider'
 import SlotManifestGrid from './SlotManifestGrid'
+
+// Local fallback prevents crashes if the heatmap component is missing.
+function TruckStatusHeatmap({ manifest, trackedSlots }) {
+  const manifestSlots = Array.isArray(manifest?.slots) ? manifest.slots.length : 0
+  const slots = Number.isFinite(trackedSlots) ? trackedSlots : manifestSlots
+  return (
+    <div className="truck-status-heatmap-fallback" aria-label="Truck status fallback">
+      <strong>Truck Status</strong>
+      <span>{slots} slots tracked</span>
+    </div>
+  )
+}
 
 export default function TruckStopDrawer({ selectedStop, onClose }) {
   const safeStop = selectedStop ?? {}
@@ -19,11 +33,11 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
     Math.min(routeStops.length, safeStop?.index ?? 0),
   )
   const defaultProgressStop = deliveryStatusList.filter((status) => status === 'delivered').length
-  const [progressStop, setProgressStop] = useState(
-    selectedStopProgress || defaultProgressStop,
-  )
+  const [progressStop, setProgressStop] = useState(selectedStopProgress ?? defaultProgressStop)
+  const [trackedSlots, setTrackedSlots] = useState(0)
   const [processTransitionTrigger, setProcessTransitionTrigger] = useState(0)
   const [progressAction, setProgressAction] = useState('sync')
+  const [highlightInsight, setHighlightInsight] = useState('')
 
   useEffect(() => {
     // Sync slider with map-selected stop, while still allowing manual slider override afterwards.
@@ -58,25 +72,68 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
     [routeStops, progressStop, normalizedStop],
   )
   const manifestInsights = useMemo(
-    () =>
-      buildManifestExplainability({
+    () => {
+      const baseInsights = buildManifestExplainability({
         manifest,
         progressStop,
         loadStats: normalizedStop?.loadStats ?? {},
         operationalKpis: normalizedStop?.operationalKpis ?? {},
-      }),
-    [manifest, progressStop, normalizedStop],
+      })
+      return highlightInsight ? [highlightInsight, ...baseInsights] : baseInsights
+    },
+    [manifest, progressStop, normalizedStop, highlightInsight],
   )
 
   const stopIndex = (safeStop?.index ?? 0) + 1
   const serviceTime = safeStop?.serviceTime ?? null
   const deliveryStatus = progressStop > (safeStop?.index ?? 0) ? 'delivered' : 'pending'
   const operationalKpis = normalizedStop?.operationalKpis ?? {}
+  const returnableSpaceReuse = useMemo(
+    () => computeReturnableSpaceReuse({ manifest }),
+    [manifest],
+  )
   const canProcessStop = progressStop < routeStops.length
-  const displayedUnloadMinutes = operationalKpis?.estimatedUnloadMinutes
-    ?? operationalKpis?.estimatedUnloadMinutesSaved
+  const displayedTimeSaved = operationalKpis?.estimatedUnloadMinutesSaved
+    ?? operationalKpis?.estimatedUnloadMinutes
     ?? serviceTime
     ?? 0
+  const displayedCo2Saved = operationalKpis?.co2SavedKg ?? 0
+  const [animatedTimeSaved, setAnimatedTimeSaved] = useState(Number(displayedTimeSaved) || 0)
+  const [animatedCo2Saved, setAnimatedCo2Saved] = useState(Number(displayedCo2Saved) || 0)
+  const previousTimeSavedRef = useRef(Number(displayedTimeSaved) || 0)
+  const previousCo2SavedRef = useRef(Number(displayedCo2Saved) || 0)
+
+  useEffect(() => {
+    const nextTime = Number(displayedTimeSaved) || 0
+    const fromTime = previousTimeSavedRef.current
+    if (fromTime === nextTime) {
+      setAnimatedTimeSaved(nextTime)
+      return () => {}
+    }
+    const controls = animate(fromTime, nextTime, {
+      duration: 0.45,
+      ease: 'easeOut',
+      onUpdate: (latest) => setAnimatedTimeSaved(latest),
+    })
+    previousTimeSavedRef.current = nextTime
+    return () => controls.stop()
+  }, [displayedTimeSaved])
+
+  useEffect(() => {
+    const nextCo2 = Number(displayedCo2Saved) || 0
+    const fromCo2 = previousCo2SavedRef.current
+    if (fromCo2 === nextCo2) {
+      setAnimatedCo2Saved(nextCo2)
+      return () => {}
+    }
+    const controls = animate(fromCo2, nextCo2, {
+      duration: 0.5,
+      ease: 'easeOut',
+      onUpdate: (latest) => setAnimatedCo2Saved(latest),
+    })
+    previousCo2SavedRef.current = nextCo2
+    return () => controls.stop()
+  }, [displayedCo2Saved])
 
   if (!selectedStop) return null
 
@@ -113,16 +170,16 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
 
       <section className="truck-kpi-header" aria-label="KPI Impact Header">
         <article className="truck-kpi-card">
-          <p className="truck-kpi-label">Descàrrega Estimada</p>
-          <strong>{displayedUnloadMinutes} min</strong>
+          <p className="truck-kpi-label">Time Saved</p>
+          <strong>{Math.max(0, Math.round(animatedTimeSaved))} min</strong>
         </article>
         <article className="truck-kpi-card">
-          <p className="truck-kpi-label">Ocupació del Camió</p>
-          <strong>{operationalKpis?.occupancyPercent ?? 0}%</strong>
+          <p className="truck-kpi-label">CO2 Saved</p>
+          <strong>{Math.max(0, animatedCo2Saved).toFixed(1)} kg</strong>
         </article>
         <article className="truck-kpi-card">
-          <p className="truck-kpi-label">Km Estalviats</p>
-          <strong>{operationalKpis?.kmSavedVsManual ?? operationalKpis?.distancePenaltyKm ?? 0} km</strong>
+          <p className="truck-kpi-label">Returnable Space Reuse</p>
+          <strong>{returnableSpaceReuse}%</strong>
         </article>
       </section>
 
@@ -143,16 +200,27 @@ export default function TruckStopDrawer({ selectedStop, onClose }) {
       />
 
       <div className="truck-stop-canvas-wrap">
+        <TruckStatusHeatmap
+          manifest={manifest}
+          trackedSlots={trackedSlots}
+          progressStop={progressStop}
+          totalStops={routeStops.length}
+        />
         <TruckCargo3D
           stopData={normalizedStop}
           selectedStopId={safeStop?.stopId ?? normalizedStop?.stopId ?? null}
           selectedStopIndex={safeStop?.index ?? null}
           cargo={safeStop?.stopData?.cargo ?? normalizedStop?.pallets ?? []}
+          routeContext={safeStop?.routeContext ?? null}
+          deliveryStatus={progressDeliveryStatus}
           ghostZones={normalizedStop?.ghostZones ?? []}
           manifest={manifest}
           progressStop={progressStop}
+          activeStopIndex={Math.max(0, Math.min(routeStops.length, progressStop))}
           processTransitionTrigger={processTransitionTrigger}
           progressAction={progressAction}
+          onTrackedSlotsChange={setTrackedSlots}
+          onHighlightReasonChange={setHighlightInsight}
         />
       </div>
 

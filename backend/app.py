@@ -1,41 +1,39 @@
-"""FastAPI server exposing the Damm Smart Truck pipeline.
+"""FastAPI server: OR-tools VRPSPD-TW + analytics layer.
 
-Endpoints:
     GET  /health           liveness probe
-    GET  /sample-request   the bundled sample_request.json (for the frontend
-                           to populate its form / show what the schema is)
-    POST /optimize         run k-means + rebalance + SA on a request body,
-                           return per-van plans
-
-The OSM road graph is loaded once at startup; per-request work is then
-~ms (k-means + SA on 12 stops finishes in well under a second).
+    GET  /sample-request   bundled example body
+    POST /optimize         main endpoint, returns plan + polylines + KPIs + explanations
+    POST /whatif           perturb the request (driver out, traffic, stop cancelled) and re-solve
+    POST /baseline         naive comparator alone
+    GET  /docs             auto Swagger UI
 """
 
 from __future__ import annotations
 
 import json
-import math
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Literal
 
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from clustering import (
-    Depot, Fleet, Stop,
-    _cluster_with_weights, _matrix_for_problem,
-    load_problem_from_dict,
-    W_GEO, W_TMID, W_TWIDTH,
+from analytics import (
+    CO2_KG_PER_KM, KPIs, compute_kpis, explain_van, load_profile, warehouse_prep,
 )
+from baseline import solve_baseline
+from firestore_writer import build_route_doc, is_enabled as fs_enabled, write_routes
+from geometry import route_polyline
 from graph_manager import get_or_build_graph
-from route_sa import sa_optimize_clusters
+from loader import build_travel_matrix, load
+from solver import solve_vrp
 
-SAMPLE_REQUEST_PATH = Path(__file__).with_name("sample_request.json")
+SAMPLE = Path(__file__).with_name("sample_request.json")
 
 
-# ---------- Request schema (mirrors data/sample_request.json) -------------
+# --- Request schema (mirrors sample_request.json) ----------------------
 
 class Coords(BaseModel):
     lat: float
@@ -43,38 +41,38 @@ class Coords(BaseModel):
 
 
 class TimeWindow(BaseModel):
-    open: str = Field(..., description="HH:MM")
+    open: str
     close: str
 
 
-class DeliveryLine(BaseModel):
+class Line(BaseModel):
     product_id: str
     qty: int
 
 
-class StopRequest(BaseModel):
+class StopReq(BaseModel):
     id: str
     coords: Coords
     time_window: TimeWindow
-    deliveries: list[DeliveryLine]
-    pickups: list[DeliveryLine] = []
+    deliveries: list[Line]
+    pickups: list[Line] = []
 
 
-class DepotRequest(BaseModel):
+class DepotReq(BaseModel):
     id: str
     coords: Coords
     open: str
     close: str
 
 
-class FleetRequest(BaseModel):
+class FleetReq(BaseModel):
     num_vans: int
     van_type: str
     vans_ref: str | None = None
     products_ref: str | None = None
 
 
-class DriverRequest(BaseModel):
+class DriverReq(BaseModel):
     id: str
     shift_start: str
     shift_end: str
@@ -83,360 +81,319 @@ class DriverRequest(BaseModel):
 class OptimizeRequest(BaseModel):
     request_id: str | None = None
     date: str | None = None
-    depot: DepotRequest
-    fleet: FleetRequest
-    drivers: list[DriverRequest]
-    stops: list[StopRequest]
+    depot: DepotReq
+    fleet: FleetReq
+    drivers: list[DriverReq]
+    stops: list[StopReq]
 
 
-# ---------- Response schema ----------------------------------------------
+class Disruption(BaseModel):
+    type: Literal["driver_unavailable", "stop_cancelled", "traffic"]
+    driver_id: str | None = None
+    stop_id: str | None = None
+    multiplier: float | None = None     # for "traffic"
 
-class StopPlan(BaseModel):
+
+class WhatIfRequest(BaseModel):
+    request: OptimizeRequest
+    disruption: Disruption
+
+
+# --- Response schema ---------------------------------------------------
+
+class StopOut(BaseModel):
     sequence: int
     id: str
     arrival_time: str
     coords: Coords
-    service_time_min: float
-    delivery_cells: int
-    delivery_kg: float
-    pickup_cells: int
-    pickup_kg: float
 
 
-class LoadingWave(BaseModel):
-    wave: int
-    zone: str
-    stop_ids: list[str]
-    stop_sequences: list[int]
-    delivery_cells: int
-    pickup_cells: int
-    picking_efficiency_score: float
-    rationale: str
+class LoadPointOut(BaseModel):
+    after_stop: str
+    cells: int
+    kg: int
 
 
-class VanPlan(BaseModel):
+class VanOut(BaseModel):
     van_idx: int
     driver_id: str
     feasible: bool
-    violations: list[str]
     travel_time_min: float
     total_time_h: float
     peak_cells: int
-    peak_kg: float
-    lateral_access_penalty: float
-    blocked_early_stop_count: int
-    accessibility_score: float
-    loading_waves: list[LoadingWave]
-    loading_manifest_markdown: str
-    loading_manifest_rows: list[dict[str, Any]]
-    truck_status_timeline: list[dict[str, Any]]
-    why_route: list[str]
-    stops: list[StopPlan]
+    peak_kg: int
+    stops: list[StopOut]
+    polyline: list[Coords]
+    load_profile: list[LoadPointOut]
+    explanations: list[str]
+
+
+class KPIsOut(BaseModel):
+    fleet_drive_min: float
+    baseline_drive_min: float
+    savings_pct: float
+    fleet_km: float
+    baseline_km: float
+    co2_kg_saved: float
+    driver_utilization_pct: float
+    capacity_utilization_pct: float
+    stops_per_van: list[int]
+    feasible_vans: int
+    total_vans: int
 
 
 class OptimizeResponse(BaseModel):
     request_id: str | None
-    fleet_total_drive_min: float
-    fleet_total_time_h: float
+    fleet_drive_min: float
+    fleet_total_h: float
     all_feasible: bool
-    depot: DepotRequest
-    vans: list[VanPlan]
+    depot: DepotReq
+    vans: list[VanOut]
+    kpis: KPIsOut
+    warehouse_prep: list[str]
+    firestore_written: int = 0
 
 
-# ---------- App lifecycle ------------------------------------------------
+# --- App ---------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Pre-warm the OSM graph; first call builds and caches to graphml.
     get_or_build_graph()
     yield
 
 
-app = FastAPI(
-    title="Damm Smart Truck API",
-    version="0.1.0",
-    description="Joint route + load optimization for DDI-style delivery rounds.",
-    lifespan=lifespan,
-)
-
+app = FastAPI(title="Damm Smart Truck API", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],          # tighten to the frontend origin in prod
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"],
+    allow_methods=["GET", "POST"], allow_headers=["*"],
 )
 
 
-# ---------- Helpers ------------------------------------------------------
-
-def _seconds_to_hm(s: float) -> str:
+def _hm(s: int) -> str:
     h, m = divmod(int(s) // 60, 60)
     return f"{h:02d}:{m:02d}"
 
 
-def _build_stop_plan(
-    sequence: int,
-    sid: str,
-    arrival_s: float,
-    stops_by_id: dict[str, Stop],
-) -> StopPlan:
-    s = stops_by_id[sid]
-    return StopPlan(
-        sequence=sequence,
-        id=sid,
-        arrival_time=_seconds_to_hm(arrival_s),
-        coords=Coords(lat=s.lat, lng=s.lng),
-        service_time_min=round(s.service_time_s / 60, 2),
-        delivery_cells=s.delivery_cells,
-        delivery_kg=round(s.delivery_kg, 2),
-        pickup_cells=s.pickup_cells,
-        pickup_kg=round(s.pickup_kg, 2),
+def _run_pipeline(
+    body: dict,
+    *,
+    write_firestore: bool,
+    traffic_multiplier: float = 1.0,
+    time_limit_s: int = 5,
+) -> OptimizeResponse:
+    """Shared core for /optimize and /whatif."""
+    try:
+        depot, fleet, drivers, stops = load(body)
+    except KeyError as e:
+        raise HTTPException(422, f"unknown reference: {e}")
+    if not drivers:
+        raise HTTPException(422, "no drivers in fleet")
+    if len(drivers) != fleet.num_vans:
+        raise HTTPException(
+            422, f"num_vans={fleet.num_vans} but {len(drivers)} drivers"
+        )
+    if not stops:
+        raise HTTPException(422, "no stops to deliver")
+
+    matrix = build_travel_matrix(depot, stops)
+    if traffic_multiplier != 1.0:
+        matrix.time_s = (matrix.time_s * float(traffic_multiplier)).astype(np.float32)
+
+    plan = solve_vrp(depot, fleet, drivers, stops, matrix, time_limit_s=time_limit_s)
+    if not plan.vans:
+        # The disruption made the day infeasible — return a structured
+        # "no plan" response instead of 500 so the UI can show it.
+        return OptimizeResponse(
+            request_id=body.get("request_id"),
+            fleet_drive_min=0.0,
+            fleet_total_h=0.0,
+            all_feasible=False,
+            depot=DepotReq(**body["depot"]),
+            vans=[],
+            kpis=KPIsOut(
+                fleet_drive_min=0.0, baseline_drive_min=0.0, savings_pct=0.0,
+                fleet_km=0.0, baseline_km=0.0, co2_kg_saved=0.0,
+                driver_utilization_pct=0.0, capacity_utilization_pct=0.0,
+                stops_per_van=[], feasible_vans=0, total_vans=fleet.num_vans,
+            ),
+            warehouse_prep=[
+                "INFEASIBLE: no valid plan exists for this scenario. "
+                "Try relaxing time windows, adding a backup driver, or rescheduling stops."
+            ],
+            firestore_written=0,
+        )
+
+    baseline_plan = solve_baseline(depot, fleet, drivers, stops, matrix)
+
+    stops_by_id = {s.id: s for s in stops}
+    graph = get_or_build_graph()
+
+    vans_out: list[VanOut] = []
+    for v in plan.vans:
+        sequence = ["DEPOT"] + [p.id for p in v.stops] + ["DEPOT"]
+        polyline = (
+            [Coords(lat=lat, lng=lng) for lat, lng in route_polyline(graph, matrix, sequence)]
+            if v.stops else []
+        )
+        prof = load_profile(v, stops_by_id)
+        vans_out.append(VanOut(
+            van_idx=v.van_idx,
+            driver_id=v.driver_id,
+            feasible=v.feasible,
+            travel_time_min=round(v.travel_s / 60, 2),
+            total_time_h=round(v.total_s / 3600, 3),
+            peak_cells=v.peak_cells,
+            peak_kg=v.peak_kg,
+            stops=[
+                StopOut(
+                    sequence=p.sequence, id=p.id,
+                    arrival_time=_hm(p.arrival_s),
+                    coords=Coords(lat=stops_by_id[p.id].lat, lng=stops_by_id[p.id].lng),
+                )
+                for p in v.stops
+            ],
+            polyline=polyline,
+            load_profile=[
+                LoadPointOut(after_stop=lp.after_stop, cells=lp.cells, kg=lp.kg)
+                for lp in prof
+            ],
+            explanations=explain_van(v, stops_by_id, drivers[v.van_idx]),
+        ))
+
+    kpis = compute_kpis(plan, baseline_plan, fleet, drivers, matrix)
+    prep = warehouse_prep(plan, body["stops"], stops_by_id)
+
+    written = 0
+    if write_firestore and fs_enabled():
+        service_times_s = {s.id: s.service_time_s for s in stops}
+        docs = [
+            build_route_doc(
+                driver_id=v.driver_id,
+                truck_id=f"T-{v.van_idx + 1:02d}",
+                van_type=body["fleet"]["van_type"],
+                depot=body["depot"],
+                request_stops=body["stops"],
+                van_plan=v,
+                service_times_s=service_times_s,
+            )
+            for v in plan.vans
+        ]
+        written = write_routes(docs)
+
+    return OptimizeResponse(
+        request_id=body.get("request_id"),
+        fleet_drive_min=round(plan.drive_s / 60, 2),
+        fleet_total_h=round(plan.total_s / 3600, 3),
+        all_feasible=plan.all_feasible,
+        depot=DepotReq(**body["depot"]),
+        vans=vans_out,
+        kpis=KPIsOut(**kpis.__dict__),
+        warehouse_prep=prep,
+        firestore_written=written,
     )
 
 
-def _build_truck_grid_assignments(stop_plans: list[StopPlan]) -> tuple[list[dict[str, Any]], int]:
-    """
-    Deterministic 2D top-down assignment with side-curtain priority.
-    Col 0 and col N-1 are laterally accessible lanes.
-    """
-    lane_count = 4
-    lane_pattern = [0, lane_count - 1, 1, lane_count - 2]
-    assignments: list[dict[str, Any]] = []
-    for idx, stop in enumerate(stop_plans):
-        col = lane_pattern[idx % len(lane_pattern)]
-        row = idx // lane_count
-        is_edge = col in (0, lane_count - 1)
-        assignments.append({
-            "stop_id": stop.id,
-            "sequence": stop.sequence,
-            "row": row,
-            "col": col,
-            "is_edge": is_edge,
-            "delivery_cells": int(stop.delivery_cells),
-            "pickup_cells": int(stop.pickup_cells),
-        })
-    return assignments, lane_count
-
-
-def _compute_lateral_metrics(assignments: list[dict[str, Any]], lane_count: int) -> tuple[float, int]:
-    penalty = 0.0
-    blocked_early = 0
-    for idx, slot in enumerate(assignments):
-        if slot["is_edge"]:
-            continue
-        remaining_later_stops = max(0, len(assignments) - idx - 1)
-        if remaining_later_stops > 0:
-            blocked_early += 1
-            penalty += 9.0 + 1.25 * remaining_later_stops
-        # Inner lanes are slower to unload even when not blocked.
-        inner_distance = min(slot["col"], (lane_count - 1) - slot["col"])
-        penalty += 3.0 + 1.4 * inner_distance
-        # Returns loaded in inner lanes are harder for reverse logistics.
-        if slot["pickup_cells"] > slot["delivery_cells"] and slot["pickup_cells"] > 0:
-            penalty += 4.5
-    return round(penalty, 2), blocked_early
-
-
-def _build_loading_waves(
-    stop_plans: list[StopPlan],
-    assignments: list[dict[str, Any]],
-) -> tuple[list[LoadingWave], list[dict[str, Any]], str]:
-    if not stop_plans:
-        return [], [], ""
-
-    by_id = {s.id: s for s in stop_plans}
-    edge_by_id = {a["stop_id"]: a["is_edge"] for a in assignments}
-    load_order = list(reversed(stop_plans))  # Back-first loading = last delivery first.
-    chunk_size = max(1, math.ceil(len(load_order) / 3))
-    zone_labels = ["Back", "Middle", "Front"]
-    waves: list[LoadingWave] = []
-    markdown_rows: list[dict[str, Any]] = []
-
-    for wave_idx in range(3):
-        chunk = load_order[wave_idx * chunk_size:(wave_idx + 1) * chunk_size]
-        if not chunk:
-            continue
-        stop_ids = [s.id for s in chunk]
-        stop_sequences = [int(s.sequence) for s in chunk]
-        delivery_cells = sum(int(s.delivery_cells) for s in chunk)
-        pickup_cells = sum(int(s.pickup_cells) for s in chunk)
-        edge_stops = sum(1 for sid in stop_ids if edge_by_id.get(sid, False))
-
-        driver_minutes_saved = (delivery_cells * 0.12) + (pickup_cells * 0.08) + (edge_stops * 1.5)
-        warehouse_walk_cost = (len(chunk) * 0.9) + (delivery_cells * 0.04)
-        score = max(10.0, min(99.0, 50.0 + (driver_minutes_saved - warehouse_walk_cost) * 6.0))
-
-        rationale = (
-            f"{zone_labels[wave_idx]} wave groups {len(chunk)} stops; "
-            f"edge-priority placements reduce curtain-side rehandles while keeping picking walks bounded."
-        )
-        wave = LoadingWave(
-            wave=wave_idx + 1,
-            zone=zone_labels[wave_idx],
-            stop_ids=stop_ids,
-            stop_sequences=stop_sequences,
-            delivery_cells=delivery_cells,
-            pickup_cells=pickup_cells,
-            picking_efficiency_score=round(score, 1),
-            rationale=rationale,
-        )
-        waves.append(wave)
-        markdown_rows.append({
-            "wave": wave.wave,
-            "zone": wave.zone,
-            "stops": ", ".join(wave.stop_ids),
-            "stop_sequences": ", ".join(str(seq) for seq in wave.stop_sequences),
-            "delivery_cells": wave.delivery_cells,
-            "pickup_cells": wave.pickup_cells,
-            "picking_efficiency_score": wave.picking_efficiency_score,
-            "rationale": wave.rationale,
-        })
-
-    table_lines = [
-        "| Wave | Zone | Stops | Sequences | Delivery Cells | Pickup Cells | Picking Efficiency | Rationale |",
-        "|---|---|---|---|---:|---:|---:|---|",
-    ]
-    for row in markdown_rows:
-        table_lines.append(
-            f"| {row['wave']} | {row['zone']} | {row['stops']} | {row['stop_sequences']} | "
-            f"{row['delivery_cells']} | {row['pickup_cells']} | {row['picking_efficiency_score']} | {row['rationale']} |"
-        )
-    return waves, markdown_rows, "\n".join(table_lines)
-
-
-def _build_truck_timeline(assignments: list[dict[str, Any]], lane_count: int) -> list[dict[str, Any]]:
-    if not assignments:
-        return []
-    max_row = max(item["row"] for item in assignments)
-    total_stops = len(assignments)
-    timeline: list[dict[str, Any]] = []
-    for progress_stop in range(0, total_stops + 1):
-        cells = []
-        for slot in assignments:
-            seq = slot["sequence"]
-            delivered = progress_stop >= seq
-            has_pickup = slot["pickup_cells"] > 0
-            status = "delivery_full"
-            if delivered and has_pickup:
-                status = "return_full"
-            elif delivered:
-                status = "empty"
-            red_zone = status == "return_full" and not slot["is_edge"]
-            cells.append({
-                "stop_id": slot["stop_id"],
-                "sequence": seq,
-                "row": slot["row"],
-                "col": slot["col"],
-                "status": status,
-                "red_zone": red_zone,
-                "is_accessible": slot["col"] in (0, lane_count - 1),
-                "delivery_cells": slot["delivery_cells"],
-                "pickup_cells": slot["pickup_cells"],
-            })
-        timeline.append({
-            "progress_stop": progress_stop,
-            "rows": max_row + 1,
-            "cols": lane_count,
-            "cells": cells,
-        })
-    return timeline
-
-
-# ---------- Endpoints ----------------------------------------------------
+# --- Endpoints ---------------------------------------------------------
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health():
     return {"status": "ok"}
 
 
 @app.get("/sample-request", response_model=OptimizeRequest)
-def sample_request() -> Any:
-    if not SAMPLE_REQUEST_PATH.exists():
-        raise HTTPException(404, "no bundled sample_request.json")
-    return json.loads(SAMPLE_REQUEST_PATH.read_text(encoding="utf-8"))
+def sample_request():
+    if not SAMPLE.exists():
+        raise HTTPException(404, "sample_request.json missing")
+    return json.loads(SAMPLE.read_text(encoding="utf-8"))
 
 
 @app.post("/optimize", response_model=OptimizeResponse)
 def optimize(req: OptimizeRequest) -> OptimizeResponse:
-    try:
-        depot, fleet, drivers, stops = load_problem_from_dict(req.model_dump())
-    except KeyError as e:
-        raise HTTPException(422, f"unknown reference: {e}")
-    if len(drivers) != fleet.num_vans:
-        raise HTTPException(
-            422,
-            f"fleet.num_vans={fleet.num_vans} but {len(drivers)} drivers provided",
-        )
+    return _run_pipeline(req.model_dump(), write_firestore=True)
+
+
+@app.post("/whatif", response_model=OptimizeResponse)
+def whatif(req: WhatIfRequest) -> OptimizeResponse:
+    body = req.request.model_dump()
+    multiplier = 1.0
+    d = req.disruption
+
+    if d.type == "driver_unavailable":
+        if not d.driver_id:
+            raise HTTPException(422, "driver_id required for driver_unavailable")
+        body["drivers"] = [x for x in body["drivers"] if x["id"] != d.driver_id]
+        body["fleet"]["num_vans"] = len(body["drivers"])
+    elif d.type == "stop_cancelled":
+        if not d.stop_id:
+            raise HTTPException(422, "stop_id required for stop_cancelled")
+        body["stops"] = [s for s in body["stops"] if s["id"] != d.stop_id]
+    elif d.type == "traffic":
+        multiplier = float(d.multiplier or 1.3)
+
+    # What-ifs are exploratory; don't overwrite the real plan in Firestore.
+    # Larger time budget — disrupted scenarios are tighter to solve.
+    return _run_pipeline(
+        body, write_firestore=False, traffic_multiplier=multiplier, time_limit_s=15,
+    )
+
+
+@app.post("/baseline", response_model=OptimizeResponse)
+def baseline_endpoint(req: OptimizeRequest) -> OptimizeResponse:
+    """Run only the naive baseline (for explicit comparison demos)."""
+    body = req.model_dump()
+    depot, fleet, drivers, stops = load(body)
+    matrix = build_travel_matrix(depot, stops)
+    plan = solve_baseline(depot, fleet, drivers, stops, matrix)
     stops_by_id = {s.id: s for s in stops}
-    matrix = _matrix_for_problem(depot, stops, use_disk_cache=False)
+    graph = get_or_build_graph()
 
-    clusters = _cluster_with_weights(
-        stops, depot, fleet, drivers, stops_by_id, matrix,
-        W_GEO, W_TMID, W_TWIDTH,
-    )
-    optimized = sa_optimize_clusters(
-        clusters, depot, fleet, drivers, stops_by_id, matrix,
-    )
-
-    vans: list[VanPlan] = []
-    fleet_drive_s = 0.0
-    fleet_total_s = 0.0
-    all_feasible = True
-    for cluster, route in optimized:
-        fleet_drive_s += route.travel_time_s
-        fleet_total_s += route.total_time_s
-        if not route.feasible:
-            all_feasible = False
-        stop_plans = [
-            _build_stop_plan(k, sid, route.arrival_times_s[k - 1], stops_by_id)
-            for k, sid in enumerate(route.stops, start=1)
-        ]
-        assignments, lane_count = _build_truck_grid_assignments(stop_plans)
-        lateral_penalty, blocked_early = _compute_lateral_metrics(assignments, lane_count)
-        accessibility_score = max(0.0, round(100.0 - min(95.0, lateral_penalty * 2.2), 1))
-        waves, markdown_rows, markdown_table = _build_loading_waves(stop_plans, assignments)
-        truck_timeline = _build_truck_timeline(assignments, lane_count)
-        why_route = [
-            (
-                f"Route keeps early stops close to side-curtain lanes; estimated lateral-access penalty "
-                f"is {lateral_penalty} with {blocked_early} potentially buried early stops."
-            ),
-            (
-                f"Reverse logistics is reserved across the route: peak load reaches "
-                f"{int(cluster.peak_cells)} cells and {round(cluster.peak_kg, 2)} kg."
-            ),
-            (
-                f"Trade-off summary: {round(route.travel_time_s / 60, 2)} driving minutes with "
-                f"accessibility score {accessibility_score}% to reduce manual pallet shifting."
-            ),
-        ]
-        vans.append(VanPlan(
-            van_idx=cluster.van_idx,
-            driver_id=drivers[cluster.van_idx].id,
-            feasible=route.feasible,
-            violations=cluster.violations,
-            travel_time_min=round(route.travel_time_s / 60, 2),
-            total_time_h=round(route.total_time_s / 3600, 3),
-            peak_cells=int(cluster.peak_cells),
-            peak_kg=round(cluster.peak_kg, 2),
-            lateral_access_penalty=lateral_penalty,
-            blocked_early_stop_count=blocked_early,
-            accessibility_score=accessibility_score,
-            loading_waves=waves,
-            loading_manifest_markdown=markdown_table,
-            loading_manifest_rows=markdown_rows,
-            truck_status_timeline=truck_timeline,
-            why_route=why_route,
-            stops=stop_plans,
+    vans_out: list[VanOut] = []
+    for v in plan.vans:
+        sequence = ["DEPOT"] + [p.id for p in v.stops] + ["DEPOT"]
+        polyline = (
+            [Coords(lat=lat, lng=lng) for lat, lng in route_polyline(graph, matrix, sequence)]
+            if v.stops else []
+        )
+        vans_out.append(VanOut(
+            van_idx=v.van_idx, driver_id=v.driver_id, feasible=v.feasible,
+            travel_time_min=round(v.travel_s / 60, 2),
+            total_time_h=round(v.total_s / 3600, 3),
+            peak_cells=v.peak_cells, peak_kg=v.peak_kg,
+            stops=[
+                StopOut(
+                    sequence=p.sequence, id=p.id,
+                    arrival_time=_hm(p.arrival_s),
+                    coords=Coords(lat=stops_by_id[p.id].lat, lng=stops_by_id[p.id].lng),
+                )
+                for p in v.stops
+            ],
+            polyline=polyline,
+            load_profile=[
+                LoadPointOut(after_stop=lp.after_stop, cells=lp.cells, kg=lp.kg)
+                for lp in load_profile(v, stops_by_id)
+            ],
+            explanations=explain_van(v, stops_by_id, drivers[v.van_idx]),
         ))
 
     return OptimizeResponse(
         request_id=req.request_id,
-        fleet_total_drive_min=round(fleet_drive_s / 60, 2),
-        fleet_total_time_h=round(fleet_total_s / 3600, 3),
-        all_feasible=all_feasible,
+        fleet_drive_min=round(plan.drive_s / 60, 2),
+        fleet_total_h=round(plan.total_s / 3600, 3),
+        all_feasible=plan.all_feasible,
         depot=req.depot,
-        vans=vans,
+        vans=vans_out,
+        kpis=KPIsOut(
+            fleet_drive_min=round(plan.drive_s / 60, 2),
+            baseline_drive_min=round(plan.drive_s / 60, 2),
+            savings_pct=0.0,
+            fleet_km=0.0, baseline_km=0.0, co2_kg_saved=0.0,
+            driver_utilization_pct=0.0, capacity_utilization_pct=0.0,
+            stops_per_van=[len(v.stops) for v in plan.vans],
+            feasible_vans=sum(1 for v in plan.vans if v.feasible),
+            total_vans=len(plan.vans),
+        ),
+        warehouse_prep=warehouse_prep(plan, body["stops"], stops_by_id),
+        firestore_written=0,
     )
 
 

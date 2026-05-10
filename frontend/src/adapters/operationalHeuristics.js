@@ -171,6 +171,7 @@ export function buildOperationalKpis({
     (selectedStopIndex <= 1 ? 4 : 2),
   )
   const co2ProjectionKg = Number((distancePenaltyKm * HEURISTIC_CONSTANTS.co2PerKmKg).toFixed(1))
+  const co2SavedKg = Number((kmSavedVsManual * HEURISTIC_CONSTANTS.co2PerKmKg).toFixed(1))
 
   return {
     totalDistanceKm: Number(totalDistanceKm.toFixed(1)),
@@ -180,6 +181,7 @@ export function buildOperationalKpis({
     estimatedUnloadMinutesSaved,
     occupancyPercent: toFiniteNumber(loadStats?.occupancyPercent, 0),
     co2ProjectionKg,
+    co2SavedKg,
   }
 }
 
@@ -485,12 +487,12 @@ export function buildManifestExplainability({
     .slice(0, 2)
   const reverseReason = returnSlots[0]?.reason
     ?? 'Space reserved here for the empty crates you will pick up.'
-  const ergonomicsReason = `Placed on the side at waist-height for easy, fast reaching (${goldenZonePercent}% of the current load).`
-  const stabilityReason = 'Heavy items placed in the middle to keep the truck stable.'
-  const blockageReason = 'Placed at the back so it does not block later deliveries.'
+  const ergonomicsReason = 'Placed on the side so you do not have to climb in.'
+  const stackingReason = 'Stacked high to save floor space for returns.'
+  const stabilityReason = 'Heaviest items at the bottom for safety.'
 
   if (reasonLines.length > 0) {
-    return [...reasonLines, blockageReason, stabilityReason, reverseReason, ergonomicsReason]
+    return [...reasonLines, ergonomicsReason, stackingReason, stabilityReason, reverseReason]
   }
 
   const fallbackEfficiency = Math.max(
@@ -498,12 +500,94 @@ export function buildManifestExplainability({
     Math.round(toFiniteNumber(operationalKpis?.estimatedUnloadMinutesSaved, 10) * 0.9),
   )
   return [
-    `Stop ${currentSequence}: ${fallbackEfficiency}% faster unloading because priority items are placed where they do not block later deliveries.`,
-    blockageReason,
+    `Stop ${currentSequence}: ${fallbackEfficiency}% faster unloading by keeping this delivery at the back so it does not block later stops.`,
+    ergonomicsReason,
+    stackingReason,
     stabilityReason,
     reverseReason,
-    ergonomicsReason,
   ]
+}
+
+export function computeAccessibilityIndex({
+  manifest = { slots: [], maxCol: 0 },
+  progressStop = 0,
+} = {}) {
+  const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
+  const maxCol = Number.isFinite(manifest?.maxCol) ? manifest.maxCol : 0
+  const currentSequence = Number(progressStop) + 1
+  const activeNow = slots.filter(
+    (slot) => slot.status === 'active' && slot.upcomingSequence === currentSequence,
+  )
+  const activeSlots = activeNow.length > 0 ? activeNow : slots.filter((slot) => slot.status === 'active')
+
+  if (activeSlots.length === 0) return 100
+
+  const edgeActive = activeSlots.filter((slot) => slot.col === 0 || slot.col === maxCol).length
+  return Math.round((edgeActive / activeSlots.length) * 100)
+}
+
+export function computeReturnableSpaceReuse({
+  manifest = { slots: [] },
+} = {}) {
+  const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
+  const inUseSlots = slots.filter((slot) => slot.status !== 'empty')
+  if (inUseSlots.length === 0) return 0
+  const returnAssigned = inUseSlots.filter((slot) => slot.status === 'return_assigned').length
+  return Math.round((returnAssigned / inUseSlots.length) * 100)
+}
+
+export function buildTruckStatusHeatmap({
+  manifest = { slots: [], maxRow: 0, maxCol: 0 },
+} = {}) {
+  const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
+  const maxRow = Number.isFinite(manifest?.maxRow) ? manifest.maxRow : 0
+  const maxCol = Number.isFinite(manifest?.maxCol) ? manifest.maxCol : 0
+  const rows = maxRow + 1
+  const cols = maxCol + 1
+
+  const statusBySlot = new Map()
+  slots.forEach((slot) => {
+    let status = 'empty'
+    if (slot?.status === 'active') status = 'delivery'
+    if (slot?.status === 'return_assigned') status = 'returnable'
+    const redZone = status === 'returnable' && slot?.col !== 0 && slot?.col !== maxCol
+    statusBySlot.set(slot.key, {
+      key: slot.key,
+      row: slot.row,
+      col: slot.col,
+      status,
+      redZone,
+      assignment: slot.assignment,
+      access: slot.access,
+    })
+  })
+
+  const cells = []
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const key = `${row}-${col}`
+      const fromManifest = statusBySlot.get(key)
+      cells.push(
+        fromManifest ?? {
+          key,
+          row,
+          col,
+          status: 'empty',
+          redZone: false,
+          assignment: 'Reserved empty slot',
+          access: col === 0 ? 'Access via Left Curtain' : col === maxCol ? 'Access via Right Curtain' : 'Center lane access',
+        },
+      )
+    }
+  }
+
+  const redZoneWarnings = cells.filter((cell) => cell.redZone)
+  return {
+    rows,
+    cols,
+    cells,
+    redZoneWarnings,
+  }
 }
 
 export { HEURISTIC_CONSTANTS, HANDLING_SECONDS_BY_TYPE }

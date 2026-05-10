@@ -1,25 +1,45 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
-import { Canvas } from '@react-three/fiber'
-import { Edges, Html, OrbitControls } from '@react-three/drei'
+import { Canvas, useFrame } from '@react-three/fiber'
+import { OrbitControls } from '@react-three/drei'
 import { animate } from 'framer-motion'
 import mockRoute from '@shared/mock_5_stops.json'
+import { resolveGranularCubePayload } from '../adapters/cubeLayout'
 
-const GRID_COLUMNS = 2
+const GRID_COLUMNS = 3
 const GRID_LAYERS = 3
-const GRID_LENGTH = 10
+const GRID_LENGTH = 8
 const CELL = {
-  x: 1.3,
-  y: 0.9,
-  z: 1,
+  x: 0.4,
+  y: 0.3,
+  z: 0.3,
 }
 const GAP = {
-  x: 0.2,
-  y: 0.09,
-  z: 0.16,
+  x: 0.05,
+  y: 0.03,
+  z: 0.05,
 }
 const BED_THICKNESS = 0.24
 const BED_CLEARANCE = 0.35
+const MINI_CUBE_SCALE = 1.0
+const ELECTRIC_BLUE = '#1E90FF'
+const ELECTRIC_BLUE_EMISSIVE = '#3B82F6'
+const ECO_GREEN = '#2D6A4F'
+const ECO_GREEN_EMISSIVE = '#1B4332'
+const GHOST_GRAY = '#D1D5DB'
+const FRICTION_RED = '#EF4444'
+
+function getActionMeta(visualState, blockedByStackAbove) {
+  if (blockedByStackAbove) return { actionLabel: 'SIDE LOADING FRICTION' }
+  if (visualState === 'current') return { actionLabel: 'DELIVER NOW' }
+  if (visualState === 'reverse') return { actionLabel: 'RETURNED LOAD' }
+  if (visualState === 'future') return { actionLabel: 'FUTURE STOP' }
+  return { actionLabel: 'INACTIVE' }
+}
+
+function formatFixed(value, digits = 1) {
+  return Number(value).toFixed(digits)
+}
 
 // Easy swap point for backend algorithm output later.
 const truckLoadManifestMock = [
@@ -113,6 +133,138 @@ function getTypeFromManifestSlot(slot, progressStop) {
   return 'empty'
 }
 
+function classifyVisualState({ stopIndex, activeStopIndex, isReverse = false }) {
+  if (isReverse) return stopIndex < activeStopIndex ? 'reverse' : 'past'
+  if (stopIndex < activeStopIndex) return 'past'
+  if (stopIndex === activeStopIndex) return 'current'
+  return 'future'
+}
+
+function isReverseCargoType(item) {
+  const marker = String(item?.type ?? item?.product ?? item?.label ?? '').toLowerCase()
+  return marker.includes('return') || marker.includes('empty') || marker.includes('vacio')
+}
+
+function hasOverlap(startA, sizeA, startB, sizeB) {
+  const endA = startA + Math.max(1, sizeA) - 1
+  const endB = startB + Math.max(1, sizeB) - 1
+  return startA <= endB && startB <= endA
+}
+
+function enrichBoxInteractions(items) {
+  const safeItems = Array.isArray(items) ? items : []
+  return safeItems.map((item) => {
+    const blockedByStackAbove = safeItems.some((candidate) => {
+      if (candidate?.id === item?.id) return false
+      const candidateY = Number(candidate?.y ?? 0)
+      const itemY = Number(item?.y ?? 0)
+      if (candidateY <= itemY) return false
+      const xOverlap = hasOverlap(
+        Number(item?.x ?? 0),
+        Number(item?.width ?? 1),
+        Number(candidate?.x ?? 0),
+        Number(candidate?.width ?? 1),
+      )
+      const zOverlap = hasOverlap(
+        Number(item?.z ?? 0),
+        Number(item?.depth ?? 1),
+        Number(candidate?.z ?? 0),
+        Number(candidate?.depth ?? 1),
+      )
+      return xOverlap && zOverlap
+    })
+    const { actionLabel } = getActionMeta(item?.visualState, blockedByStackAbove)
+    const quantity = Math.max(0, Number(item?.skuCount ?? 0))
+    const weightKg = Number(item?.weightKg ?? quantity * 0.85)
+    const volumeM3 = Number(item?.volumeM3 ?? Math.max(0.04, quantity * 0.028))
+
+    return {
+      ...item,
+      blockedByStackAbove,
+      actionLabel,
+      productType: item?.product ?? item?.label ?? 'Mixed SKU',
+      quantityLabel: `${quantity} units`,
+      quantityUnits: quantity,
+      weightLabel: `${formatFixed(weightKg, 1)} kg`,
+      volumeLabel: `${formatFixed(volumeM3, 2)} m3`,
+      unloadInstruction: item?.reason ?? 'Maintain side-curtain access and follow stop discharge order.',
+      hoverId: `box-${item?.id ?? `${item?.x}-${item?.y}-${item?.z}`}`,
+    }
+  })
+}
+
+function enrichCubeInteractions(cubes) {
+  const safeCubes = Array.isArray(cubes) ? cubes : []
+  return safeCubes.map((cube, index) => {
+    const blockedByStackAbove = safeCubes.some((candidate, candidateIndex) => {
+      if (candidateIndex === index) return false
+      const sameX = Number(candidate?.x ?? 0) === Number(cube?.x ?? 0)
+      const sameY = Number(candidate?.y ?? 0) === Number(cube?.y ?? 0)
+      const above = Number(candidate?.z ?? 0) > Number(cube?.z ?? 0)
+      return sameX && sameY && above
+    })
+    const { actionLabel } = getActionMeta(cube?.visualState, blockedByStackAbove)
+    const quantity = Math.max(1, Number(cube?.qty ?? cube?.units ?? cube?.skuCount ?? 1))
+    const weightKg = Number(cube?.weightKg ?? quantity * 0.82)
+    const volumeM3 = Number(cube?.volumeM3 ?? Math.max(0.04, quantity * 0.024))
+
+    return {
+      ...cube,
+      blockedByStackAbove,
+      actionLabel,
+      productType: cube?.product_id ?? cube?.product ?? cube?.label ?? 'Mixed SKU',
+      quantityLabel: `${quantity} units`,
+      quantityUnits: quantity,
+      weightLabel: `${formatFixed(weightKg, 1)} kg`,
+      volumeLabel: `${formatFixed(volumeM3, 2)} m3`,
+      unloadInstruction: cube?.reason ?? 'Unload by route order and keep lateral lane clear for next stop.',
+      hoverId: `cube-${cube?.product_id ?? index}-${cube?.x ?? 0}-${cube?.y ?? 0}-${cube?.z ?? 0}`,
+    }
+  })
+}
+
+function buildScheduleDrivenBoxes(routeStops, activeStopIndex) {
+  if (!Array.isArray(routeStops) || routeStops.length === 0) return []
+  const boxes = []
+  let slotIndex = 0
+
+  function nextSlotPosition() {
+    const x = slotIndex % GRID_COLUMNS
+    const z = Math.floor(slotIndex / GRID_COLUMNS) % GRID_LENGTH
+    const y = Math.floor(slotIndex / (GRID_COLUMNS * GRID_LENGTH)) % GRID_LAYERS
+    slotIndex += 1
+    return { x, y, z }
+  }
+
+  routeStops.forEach((stop, stopIndex) => {
+    const cargoItems = Array.isArray(stop?.cargo) ? stop.cargo : []
+    cargoItems.forEach((item, itemIndex) => {
+      const isReverse = isReverseCargoType(item)
+      const shouldRender = isReverse ? stopIndex < activeStopIndex : stopIndex >= activeStopIndex
+      if (!shouldRender) return
+      const slot = nextSlotPosition()
+
+      boxes.push({
+        id: `${stop?.stopId ?? `stop-${stopIndex + 1}`}-${item?.id ?? itemIndex}`,
+        x: slot.x,
+        y: slot.y,
+        z: slot.z,
+        width: 1,
+        depth: 1,
+        height: 1,
+        label: item?.label ?? item?.product ?? `Pallet ${itemIndex + 1}`,
+        reason: item?.reason ?? '',
+        skuCount: Number(item?.skuCount ?? item?.qty ?? item?.units ?? 1),
+        product: item?.product ?? item?.label ?? 'Mixed SKU',
+        stopIndex,
+        isReverse,
+      })
+    })
+  })
+
+  return boxes
+}
+
 function buildTruckLoadManifest({
   manifest,
   cargo = [],
@@ -128,7 +280,7 @@ function buildTruckLoadManifest({
     normalizeCargoItems(cargo).map((item) => [getSlotKey(item.row, item.col), item]),
   )
 
-  return slots
+  const mapped = slots
     .filter((slot) => slot.col < GRID_LENGTH && slot.row < GRID_COLUMNS)
     .map((slot, index) => {
       const type = getTypeFromManifestSlot(slot, progressStop)
@@ -149,6 +301,9 @@ function buildTruckLoadManifest({
       )
       const label = slot?.label ?? item?.label ?? `${skuCount} SKUs`
       const defaultReason = `Stop ${slot?.upcomingSequence ?? progressStop + 1}: ${label} placed at ${slot?.coordinate ?? 'lateral floor'} for side-curtain access.`
+      const stopSequence = Number(slot?.upcomingSequence ?? progressStop + 1)
+      const stopIndex = Number.isFinite(stopSequence) ? Math.max(0, stopSequence - 1) : Math.max(0, progressStop)
+      const isReverse = type === 'returnable' || String(item?.type ?? '').toLowerCase().includes('return')
 
       return {
         id: slot.key ?? `slot-${index}`,
@@ -163,9 +318,45 @@ function buildTruckLoadManifest({
         reason: String(slot?.reason ?? item?.reason ?? defaultReason),
         skuCount,
         product: item?.product ?? slot?.product ?? 'Mixed SKU',
+        stopIndex,
+        isReverse,
       }
     })
     .filter(Boolean)
+
+  // Always reserve visible reverse-logistics capacity from the first stop.
+  const reservedReturnables = slots
+    .filter((slot) => slot.col < GRID_LENGTH && slot.row < GRID_COLUMNS)
+    .filter((slot) => slot.status === 'empty' || slot.status === 'return_assigned')
+    .filter((slot) => slot.col === GRID_LENGTH - 1 || slot.col === GRID_LENGTH - 2)
+    .slice(0, 2)
+    .map((slot, index) => ({
+      id: `reserved-return-${slot.key}-${index}`,
+      x: Math.max(0, Math.min(GRID_COLUMNS - 1, Number(slot.row))),
+      y: 0,
+      z: Math.max(0, Math.min(GRID_LENGTH - 1, Number(slot.col))),
+      width: 1,
+      height: 1,
+      depth: 1,
+      type: 'returnable',
+      label: 'Empty Box',
+      reason: 'Space reserved here for the empty crates you will pick up.',
+      skuCount: 0,
+      product: 'Returnables',
+      stopIndex: Math.max(0, progressStop),
+      isReverse: true,
+    }))
+
+  const byCoordinate = new Set(mapped.map((item) => `${item.x}-${item.y}-${item.z}`))
+  reservedReturnables.forEach((item) => {
+    const coordKey = `${item.x}-${item.y}-${item.z}`
+    if (!byCoordinate.has(coordKey)) {
+      mapped.push(item)
+      byCoordinate.add(coordKey)
+    }
+  })
+
+  return mapped
 }
 
 function getGridFootprint() {
@@ -196,6 +387,28 @@ function getBoxWorldPosition(item) {
   return { x, y, z, totalX, totalY, totalZ }
 }
 
+function getMiniCubePosition(cube, dim) {
+  const { width, length } = getGridFootprint()
+  const safeL = Math.max(1, Number(dim?.L ?? 1))
+  const safeW = Math.max(1, Number(dim?.W ?? 1))
+  const safeH = Math.max(1, Number(dim?.H ?? 1))
+  const unitX = width / safeL
+  const unitZ = length / safeW
+  const unitY = Math.max(0.26, (Math.min(unitX, unitZ) * MINI_CUBE_SCALE) / safeH)
+  const offsetX = -(width / 2) + unitX / 2
+  const offsetZ = -(length / 2) + unitZ / 2
+  const sx = Math.max(0.28, unitX * 0.95)
+  const sz = Math.max(0.24, unitZ * 0.9)
+  return {
+    x: offsetX + Number(cube?.x ?? 0) * unitX,
+    y: BED_CLEARANCE + BED_THICKNESS + unitY / 2 + Number(cube?.z ?? 0) * (unitY * 0.92),
+    z: offsetZ + Number(cube?.y ?? 0) * unitZ,
+    sx,
+    sy: unitY,
+    sz,
+  }
+}
+
 function Wheel({ position, scale = [1, 1, 1] }) {
   return (
     <mesh position={position} scale={scale} rotation={[Math.PI / 2, 0, 0]} castShadow receiveShadow>
@@ -207,62 +420,84 @@ function Wheel({ position, scale = [1, 1, 1] }) {
 
 function TruckChassis() {
   const { width, length } = getGridFootprint()
-  const cabLength = 1.2
-  const cabWidth = Math.max(2.25, width + 0.55)
-  const cabBaseZ = -(length / 2 + cabLength / 2 + 0.25)
+  const cabLength = 0.72
+  const cabWidth = Math.max(1.45, width + 0.12)
+  const cabHeight = 0.98
+  const cabBaseZ = -(length / 2 + cabLength / 2 + 0.18)
 
   return (
     <group>
       <mesh receiveShadow position={[0, BED_CLEARANCE - 0.25, -0.25]}>
         <boxGeometry args={[width + 0.95, 0.28, length + 2.25]} />
-        <meshStandardMaterial color="#1f2937" metalness={0.34} roughness={0.56} />
+        <meshStandardMaterial color="#1f2937" metalness={0.08} roughness={0.88} />
       </mesh>
 
       <mesh receiveShadow position={[0, BED_CLEARANCE, 0]}>
         <boxGeometry args={[width + 0.32, BED_THICKNESS, length + 0.32]} />
-        <meshStandardMaterial color="#475569" metalness={0.5} roughness={0.34} />
+        <meshStandardMaterial color="#475569" metalness={0.1} roughness={0.84} />
       </mesh>
 
       <mesh receiveShadow position={[0, BED_CLEARANCE - 0.22, 0]}>
         <boxGeometry args={[width + 0.82, 0.24, length + 0.62]} />
-        <meshStandardMaterial color="#1e293b" metalness={0.36} roughness={0.52} />
+        <meshStandardMaterial color="#1e293b" metalness={0.08} roughness={0.86} />
       </mesh>
 
-      <mesh castShadow receiveShadow position={[0, BED_CLEARANCE + 0.76, cabBaseZ]}>
-        <boxGeometry args={[cabWidth, 1.56, cabLength]} />
-        <meshStandardMaterial color="#e30613" metalness={0.26} roughness={0.38} />
+      <mesh castShadow receiveShadow position={[0, BED_CLEARANCE + 0.56, cabBaseZ]}>
+        <boxGeometry args={[cabWidth, cabHeight, cabLength]} />
+        <meshStandardMaterial color="#e30613" metalness={0.06} roughness={0.9} />
       </mesh>
 
-      <mesh castShadow receiveShadow position={[0, BED_CLEARANCE + 1.63, cabBaseZ - 0.12]}>
-        <boxGeometry args={[cabWidth * 0.82, 0.36, cabLength * 0.82]} />
-        <meshStandardMaterial color="#dc2626" metalness={0.22} roughness={0.42} />
+      <mesh castShadow receiveShadow position={[0, BED_CLEARANCE + 1.08, cabBaseZ - 0.08]}>
+        <boxGeometry args={[cabWidth * 0.78, 0.24, cabLength * 0.78]} />
+        <meshStandardMaterial color="#dc2626" metalness={0.06} roughness={0.9} />
       </mesh>
 
-      <mesh position={[0, BED_CLEARANCE + 0.86, cabBaseZ - 0.63]}>
-        <boxGeometry args={[cabWidth * 0.76, 0.68, 0.08]} />
+      <mesh position={[0, BED_CLEARANCE + 0.58, cabBaseZ - 0.4]}>
+        <boxGeometry args={[cabWidth * 0.72, 0.42, 0.07]} />
         <meshStandardMaterial color="#dbeafe" transparent opacity={0.76} />
       </mesh>
 
-      <mesh position={[-(cabWidth / 2 + 0.12), BED_CLEARANCE + 1.1, cabBaseZ - 0.08]}>
-        <boxGeometry args={[0.08, 0.42, 0.24]} />
+      <mesh position={[-(cabWidth / 2 + 0.09), BED_CLEARANCE + 0.74, cabBaseZ - 0.02]}>
+        <boxGeometry args={[0.06, 0.28, 0.18]} />
         <meshStandardMaterial color="#020617" metalness={0.18} roughness={0.7} />
       </mesh>
-      <mesh position={[cabWidth / 2 + 0.12, BED_CLEARANCE + 1.1, cabBaseZ - 0.08]}>
-        <boxGeometry args={[0.08, 0.42, 0.24]} />
+      <mesh position={[cabWidth / 2 + 0.09, BED_CLEARANCE + 0.74, cabBaseZ - 0.02]}>
+        <boxGeometry args={[0.06, 0.28, 0.18]} />
         <meshStandardMaterial color="#020617" metalness={0.18} roughness={0.7} />
       </mesh>
 
-      <mesh position={[-0.55, BED_CLEARANCE + 0.45, cabBaseZ - 0.92]}>
-        <boxGeometry args={[0.22, 0.12, 0.1]} />
+      <mesh position={[-0.36, BED_CLEARANCE + 0.32, cabBaseZ - 0.5]}>
+        <boxGeometry args={[0.16, 0.08, 0.08]} />
         <meshStandardMaterial color="#f8fafc" emissive="#e30613" emissiveIntensity={0.45} />
       </mesh>
-      <mesh position={[0.55, BED_CLEARANCE + 0.45, cabBaseZ - 0.92]}>
-        <boxGeometry args={[0.22, 0.12, 0.1]} />
+      <mesh position={[0.36, BED_CLEARANCE + 0.32, cabBaseZ - 0.5]}>
+        <boxGeometry args={[0.16, 0.08, 0.08]} />
         <meshStandardMaterial color="#f8fafc" emissive="#e30613" emissiveIntensity={0.45} />
+      </mesh>
+      <mesh position={[0, BED_CLEARANCE + 0.12, cabBaseZ - 0.52]}>
+        <boxGeometry args={[cabWidth * 0.82, 0.1, 0.12]} />
+        <meshStandardMaterial color="#111827" metalness={0.22} roughness={0.68} />
       </mesh>
 
-      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, -(length / 2 + 1.1)]} scale={[1, 1, 1]} />
-      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, -(length / 2 + 1.1)]} scale={[1, 1, 1]} />
+      <mesh position={[-(width / 2 + 0.06), BED_CLEARANCE + BED_THICKNESS + 0.02, 0]}>
+        <boxGeometry args={[0.03, 0.04, length + 0.08]} />
+        <meshStandardMaterial color="#bfdbfe" emissive="#60a5fa" emissiveIntensity={0.22} transparent opacity={0.85} />
+      </mesh>
+      <mesh position={[width / 2 + 0.06, BED_CLEARANCE + BED_THICKNESS + 0.02, 0]}>
+        <boxGeometry args={[0.03, 0.04, length + 0.08]} />
+        <meshStandardMaterial color="#bfdbfe" emissive="#60a5fa" emissiveIntensity={0.22} transparent opacity={0.85} />
+      </mesh>
+      <mesh position={[-(width / 2 + 0.14), BED_CLEARANCE + 0.56, 0]}>
+        <boxGeometry args={[0.02, 0.82, length + 0.08]} />
+        <meshPhysicalMaterial color="#dbeafe" transparent opacity={0.12} roughness={0.1} metalness={0.04} transmission={0.8} ior={1.18} />
+      </mesh>
+      <mesh position={[width / 2 + 0.14, BED_CLEARANCE + 0.56, 0]}>
+        <boxGeometry args={[0.02, 0.82, length + 0.08]} />
+        <meshPhysicalMaterial color="#dbeafe" transparent opacity={0.12} roughness={0.1} metalness={0.04} transmission={0.8} ior={1.18} />
+      </mesh>
+
+      <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, -(length / 2 + 0.8)]} scale={[1, 1, 1]} />
+      <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, -(length / 2 + 0.8)]} scale={[1, 1, 1]} />
       <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, -0.8]} scale={[1, 1, 1.02]} />
       <Wheel position={[width / 2 + 0.42, BED_CLEARANCE - 0.56, -0.8]} scale={[1, 1, 1.02]} />
       <Wheel position={[-(width / 2 + 0.42), BED_CLEARANCE - 0.56, 0.9]} scale={[1, 1, 1.05]} />
@@ -271,36 +506,50 @@ function TruckChassis() {
   )
 }
 
-function DashedWireframe({ totalX, totalY, totalZ }) {
-  const ref = useRef(null)
-  const geometry = useMemo(
-    () => new THREE.BoxGeometry(totalX + 0.03, totalY + 0.03, totalZ + 0.03),
-    [totalX, totalY, totalZ],
-  )
-
-  useEffect(() => {
-    if (ref.current) {
-      ref.current.computeLineDistances()
-    }
-  }, [])
-
-  useEffect(() => () => geometry.dispose(), [geometry])
-
-  return (
-    <lineSegments ref={ref}>
-      <edgesGeometry args={[geometry]} />
-      <lineDashedMaterial color="#ffffff" dashSize={0.14} gapSize={0.1} />
-    </lineSegments>
-  )
-}
-
-function CargoBox({ item, shouldAnimate, animateToken }) {
+function CargoBox({
+  item,
+  shouldAnimate,
+  animateToken,
+  hovered,
+  blockedByStackAbove,
+  onEnter,
+  onLeave,
+}) {
   const { x, y, z, totalX, totalY, totalZ } = getBoxWorldPosition(item)
   const groupRef = useRef(null)
-  const isReturnable = item.type === 'returnable'
-  const isActive = item.type === 'active'
-  const isFuture = item.type === 'future'
-  const isGoldenZone = (item.x === 0 || item.x === GRID_COLUMNS - 1) && item.y === 1
+  const materialRef = useRef(null)
+  const isReverse = item.visualState === 'reverse'
+  const isCurrent = item.visualState === 'current'
+  const isFuture = item.visualState === 'future'
+
+  useFrame(({ clock }) => {
+    if (!materialRef.current) return
+    if (blockedByStackAbove) {
+      const frictionPulse = 0.16 + (Math.sin(clock.elapsedTime * 7.8) * 0.07)
+      materialRef.current.emissive.set(FRICTION_RED)
+      materialRef.current.emissiveIntensity = Math.max(0.08, frictionPulse)
+      return
+    }
+    if (hovered) {
+      const glow = 0.32 + (Math.sin(clock.elapsedTime * 7.2) * 0.1)
+      materialRef.current.emissive.set('#e2e8f0')
+      materialRef.current.emissiveIntensity = Math.max(0.14, glow)
+      return
+    }
+    if (isCurrent) {
+      const pulse = 0.6 + (Math.sin(clock.elapsedTime * 5.6) * 0.22)
+      materialRef.current.emissive.set(ELECTRIC_BLUE_EMISSIVE)
+      materialRef.current.emissiveIntensity = Math.max(0.35, pulse)
+      return
+    }
+    if (isReverse) {
+      materialRef.current.emissive.set(ECO_GREEN_EMISSIVE)
+      materialRef.current.emissiveIntensity = 0.05
+      return
+    }
+    materialRef.current.emissive.set('#1f2937')
+    materialRef.current.emissiveIntensity = 0.02
+  }, [hovered, blockedByStackAbove, isCurrent, isReverse])
 
   useEffect(() => {
     if (!groupRef.current) return () => {}
@@ -326,50 +575,37 @@ function CargoBox({ item, shouldAnimate, animateToken }) {
 
   return (
     <group ref={groupRef} position={[x, y, z]}>
-      <mesh castShadow receiveShadow>
+      <mesh
+        castShadow
+        receiveShadow
+        onPointerEnter={(event) => {
+          event.stopPropagation()
+          onEnter?.(event)
+        }}
+        onPointerLeave={(event) => {
+          event.stopPropagation()
+          onLeave?.()
+        }}
+      >
         <boxGeometry args={[totalX, totalY, totalZ]} />
         <meshStandardMaterial
-          color={isActive ? '#2563eb' : isFuture ? '#64748b' : '#ffffff'}
-          emissive={isActive ? '#1d4ed8' : '#0f172a'}
-          emissiveIntensity={isActive ? 0.18 : 0.03}
-          transparent={!isActive}
-          opacity={isReturnable ? 0.06 : isFuture ? 0.44 : 1}
-          metalness={0.18}
-          roughness={0.48}
+          ref={materialRef}
+          color={isCurrent ? ELECTRIC_BLUE : isReverse ? ECO_GREEN : isFuture ? GHOST_GRAY : '#b91c1c'}
+          emissive={isCurrent ? ELECTRIC_BLUE_EMISSIVE : isReverse ? ECO_GREEN_EMISSIVE : '#1f2937'}
+          emissiveIntensity={isCurrent ? 0.58 : 0.03}
+          transparent={isFuture}
+          opacity={isFuture ? 0.3 : 1}
+          metalness={0.05}
+          roughness={isReverse ? 0.95 : 0.74}
         />
-        {isReturnable ? <Edges threshold={15} color="#ffffff" /> : null}
       </mesh>
-      {isReturnable ? <DashedWireframe totalX={totalX} totalY={totalY} totalZ={totalZ} /> : null}
-
-      {isGoldenZone && !isReturnable ? (
-        <mesh>
-          <boxGeometry args={[totalX + 0.08, totalY + 0.08, totalZ + 0.08]} />
-          <meshStandardMaterial
-            color="#f59e0b"
-            emissive="#f59e0b"
-            emissiveIntensity={0.3}
-            transparent
-            opacity={0.14}
-            depthWrite={false}
-          />
+      {isFuture ? (
+        <mesh scale={[1.01, 1.01, 1.01]}>
+          <boxGeometry args={[totalX, totalY, totalZ]} />
+          <meshBasicMaterial color="#ffffff" wireframe transparent opacity={0.28} />
         </mesh>
       ) : null}
     </group>
-  )
-}
-
-function ActivePalletLabel({ item }) {
-  const { x, y, z, totalY } = getBoxWorldPosition(item)
-  const skuText = String(item?.label ?? `${item?.skuCount ?? 0} SKUs`)
-  const skuMatch = skuText.match(/(\d+)/)
-  const skuCount = skuMatch?.[1] ?? (item?.skuCount ?? 0)
-  return (
-    <Html position={[x, y + totalY / 2 + 0.55, z]} center distanceFactor={8.5}>
-      <div className="active-pallet-label">
-        <p className="active-pallet-kicker">Stop Active</p>
-        <strong>{`📦 ${skuCount} items for this stop`}</strong>
-      </div>
-    </Html>
   )
 }
 
@@ -416,16 +652,22 @@ function FadingPoofBox({ item, animateToken }) {
   )
 }
 
-function CargoScene({ boxes, fadingBoxes = [], enableTransition, animateToken }) {
+function CargoScene({
+  boxes,
+  fadingBoxes = [],
+  enableTransition,
+  animateToken,
+  hoveredId,
+  selectedStopIndex,
+  onHoverChange,
+}) {
   const { width, length } = getGridFootprint()
-  const activeBoxes = boxes.filter((item) => item.type === 'active')
-  const leadActive = activeBoxes[0] ?? null
 
   return (
     <>
-      <ambientLight intensity={0.58} />
-      <directionalLight castShadow intensity={1.15} position={[7.2, 8.4, 6.4]} />
-      <directionalLight intensity={0.45} position={[-5, 4, -6]} />
+      <ambientLight intensity={0.5} />
+      <directionalLight castShadow intensity={1.25} position={[0, 10, 0]} />
+      <directionalLight intensity={0.38} position={[6.2, 4.8, 5.4]} />
 
       <TruckChassis />
       {boxes.map((item) => (
@@ -434,13 +676,15 @@ function CargoScene({ boxes, fadingBoxes = [], enableTransition, animateToken })
           item={item}
           shouldAnimate={enableTransition}
           animateToken={animateToken}
+          hovered={hoveredId === item.hoverId}
+          blockedByStackAbove={item.blockedByStackAbove}
+          onEnter={(event) => onHoverChange?.(item, event)}
+          onLeave={() => onHoverChange?.(null)}
         />
       ))}
       {fadingBoxes.map((item) => (
         <FadingPoofBox key={`poof-${item.id}-${animateToken}`} item={item} animateToken={animateToken} />
       ))}
-      {leadActive ? <ActivePalletLabel item={leadActive} /> : null}
-
       <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, BED_CLEARANCE - 0.9, 0]}>
         <planeGeometry args={[width + 7.5, length + 7.5]} />
         <shadowMaterial opacity={0.24} />
@@ -449,11 +693,122 @@ function CargoScene({ boxes, fadingBoxes = [], enableTransition, animateToken })
       <OrbitControls
         makeDefault
         enablePan={false}
-        minDistance={6}
-        maxDistance={16}
-        minPolarAngle={0.74}
-        maxPolarAngle={1.22}
-        target={[0, BED_CLEARANCE + 0.95, 0]}
+        minDistance={4.9}
+        maxDistance={11.5}
+        minPolarAngle={0.82}
+        maxPolarAngle={1.16}
+        target={[0, BED_CLEARANCE + 0.72, 0.24]}
+      />
+    </>
+  )
+}
+
+function MiniCube({ cube, dim, faded, hovered, blockedByStackAbove, onEnter, onLeave }) {
+  const pos = getMiniCubePosition(cube, dim)
+  const materialRef = useRef(null)
+  const isCurrent = cube.visualState === 'current'
+  const isFuture = cube.visualState === 'future'
+  const isReverse = cube.visualState === 'reverse'
+
+  useFrame(({ clock }) => {
+    if (!materialRef.current) return
+    if (blockedByStackAbove) {
+      const frictionPulse = 0.14 + (Math.sin(clock.elapsedTime * 7.6) * 0.07)
+      materialRef.current.emissive.set(FRICTION_RED)
+      materialRef.current.emissiveIntensity = Math.max(0.08, frictionPulse)
+      return
+    }
+    if (hovered) {
+      const glow = 0.28 + (Math.sin(clock.elapsedTime * 6.9) * 0.1)
+      materialRef.current.emissive.set('#e2e8f0')
+      materialRef.current.emissiveIntensity = Math.max(0.14, glow)
+      return
+    }
+    if (isCurrent) {
+      const pulse = 0.56 + (Math.sin(clock.elapsedTime * 5.4) * 0.2)
+      materialRef.current.emissive.set(ELECTRIC_BLUE_EMISSIVE)
+      materialRef.current.emissiveIntensity = Math.max(0.32, pulse)
+      return
+    }
+    materialRef.current.emissive.set(isReverse ? ECO_GREEN_EMISSIVE : '#1f2937')
+    materialRef.current.emissiveIntensity = isReverse ? 0.05 : 0.02
+  }, [hovered, blockedByStackAbove, isCurrent, isReverse])
+
+  return (
+    <mesh
+      position={[pos.x, pos.y, pos.z]}
+      castShadow
+      onPointerEnter={(event) => {
+        event.stopPropagation()
+        onEnter(event)
+      }}
+      onPointerLeave={onLeave}
+    >
+      <boxGeometry args={[pos.sx, pos.sy, pos.sz]} />
+      <meshStandardMaterial
+        ref={materialRef}
+        color={isCurrent ? ELECTRIC_BLUE : isReverse ? ECO_GREEN : isFuture ? GHOST_GRAY : '#b91c1c'}
+        emissive={isCurrent ? ELECTRIC_BLUE_EMISSIVE : isReverse ? ECO_GREEN_EMISSIVE : '#1f2937'}
+        emissiveIntensity={isCurrent ? 0.54 : 0.03}
+        roughness={isReverse ? 0.95 : 0.74}
+        metalness={0.04}
+        transparent={faded}
+        opacity={faded ? 0.22 : isFuture ? 0.3 : 1}
+      />
+      {isFuture ? (
+        <mesh scale={[1.01, 1.01, 1.01]}>
+          <boxGeometry args={[pos.sx, pos.sy, pos.sz]} />
+          <meshBasicMaterial color="#ffffff" wireframe transparent opacity={0.26} />
+        </mesh>
+      ) : null}
+    </mesh>
+  )
+}
+
+function GranularCubeScene({
+  cubes,
+  cubeGrid,
+  activeStopIndex,
+  hoveredId,
+  selectedStopIndex,
+  onHoverChange,
+}) {
+  const rows = Math.max(1, Math.ceil((Number(cubeGrid?.W ?? 1)) / 3))
+  const cols = Math.max(1, Math.ceil((Number(cubeGrid?.L ?? 1)) / 3))
+
+  return (
+    <>
+      <ambientLight intensity={0.5} />
+      <directionalLight castShadow intensity={1.2} position={[0, 10, 0]} />
+      <directionalLight intensity={0.36} position={[6, 4.5, 5]} />
+      <TruckChassis />
+
+      {cubes.map((cube, index) => (
+        <MiniCube
+          key={`${cube.product_id ?? 'cube'}-${index}`}
+          cube={cube}
+          dim={cubeGrid}
+          faded={cube.stop_index < activeStopIndex}
+          hovered={hoveredId === cube.hoverId}
+          blockedByStackAbove={cube.blockedByStackAbove}
+          onEnter={(event) => onHoverChange?.(cube, event)}
+          onLeave={() => onHoverChange?.(null)}
+        />
+      ))}
+
+      <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, BED_CLEARANCE - 0.9, 0]}>
+        <planeGeometry args={[cols * 2.8, rows * 4.2]} />
+        <shadowMaterial opacity={0.24} />
+      </mesh>
+
+      <OrbitControls
+        makeDefault
+        enablePan={false}
+        minDistance={4.9}
+        maxDistance={11.5}
+        minPolarAngle={0.82}
+        maxPolarAngle={1.16}
+        target={[0, BED_CLEARANCE + 0.72, 0.24]}
       />
     </>
   )
@@ -462,12 +817,17 @@ function CargoScene({ boxes, fadingBoxes = [], enableTransition, animateToken })
 export default function TruckCargo3D({
   stopData,
   cargo,
+  routeContext = null,
+  deliveryStatus = [],
   selectedStopId,
   selectedStopIndex,
   manifest = null,
   progressStop = 0,
+  activeStopIndex = 0,
   processTransitionTrigger = 0,
   progressAction = 'sync',
+  onTrackedSlotsChange,
+  onHighlightReasonChange,
 }) {
   const selectedMockStop =
     mockRoute?.stops?.find((stop, index) => {
@@ -480,28 +840,175 @@ export default function TruckCargo3D({
       return false
     }) ?? mockRoute?.stops?.[0] ?? null
 
+  const activeRouteContext = routeContext ?? mockRoute ?? {}
+  const routeStops = Array.isArray(activeRouteContext?.stops) ? activeRouteContext.stops : []
   const activeCargo = Array.isArray(cargo) && cargo.length > 0
     ? cargo
     : selectedMockStop?.cargo ?? []
 
   const selectedStopKey = selectedStopId ?? selectedMockStop?.stopId ?? `stop-${selectedStopIndex ?? 0}`
+  const effectiveActiveStopIndex = Math.max(
+    0,
+    Math.min(
+      Math.max(0, deliveryStatus?.length ?? routeStops.length ?? 0),
+      Number.isFinite(activeStopIndex) ? activeStopIndex : progressStop,
+    ),
+  )
+  const scheduleDrivenBoxes = useMemo(
+    () => buildScheduleDrivenBoxes(routeStops, effectiveActiveStopIndex),
+    [routeStops, effectiveActiveStopIndex],
+  )
   const truckLoadManifest = useMemo(
     () => buildTruckLoadManifest({ manifest, cargo: activeCargo, progressStop }),
     [manifest, activeCargo, progressStop],
   )
-  const previousManifestRef = useRef(truckLoadManifest)
+  const granularPayload = useMemo(
+    () =>
+      resolveGranularCubePayload({
+        cubes: activeRouteContext?.cubes,
+        cubeGrid: activeRouteContext?.cube_grid,
+        pallets: activeRouteContext?.pallets,
+        deliveries: activeRouteContext?.deliveries,
+        cargo: activeCargo,
+        layout: activeRouteContext?.truck_layout,
+        selectedStopIndex,
+      }),
+    [activeRouteContext, activeCargo, selectedStopIndex],
+  )
+  const previousManifestRef = useRef([])
   const [fadingBoxes, setFadingBoxes] = useState([])
-  const reverseCount = truckLoadManifest.filter((box) => box.type === 'returnable').length
+  const [hoveredPayload, setHoveredPayload] = useState(null)
+  const classifiedManifestBoxes = useMemo(
+    () =>
+      truckLoadManifest.map((item) => ({
+        ...item,
+        visualState: classifyVisualState({
+          stopIndex: Number.isFinite(item?.stopIndex) ? item.stopIndex : effectiveActiveStopIndex,
+          activeStopIndex: effectiveActiveStopIndex,
+          isReverse: Boolean(item?.isReverse),
+        }),
+      })),
+    [truckLoadManifest, effectiveActiveStopIndex],
+  )
+  const classifiedScheduleBoxes = useMemo(
+    () =>
+      scheduleDrivenBoxes.map((item) => ({
+        ...item,
+        visualState: classifyVisualState({
+          stopIndex: Number(item?.stopIndex ?? 0),
+          activeStopIndex: effectiveActiveStopIndex,
+          isReverse: Boolean(item?.isReverse),
+        }),
+      })),
+    [scheduleDrivenBoxes, effectiveActiveStopIndex],
+  )
+  const classifiedGranularCubes = useMemo(
+    () =>
+      granularPayload.cubes.map((cube) => ({
+        ...cube,
+        visualState: classifyVisualState({
+          stopIndex: Number(cube?.stop_index ?? 0),
+          activeStopIndex: effectiveActiveStopIndex,
+          isReverse: Boolean(cube?.is_reverse),
+        }),
+      })),
+    [granularPayload.cubes, effectiveActiveStopIndex],
+  )
+  const hasScheduleDrivenData = classifiedScheduleBoxes.length > 0
+  const useGranularMode = !hasScheduleDrivenData && granularPayload.cubes.length > 0
+  const renderBoxes = hasScheduleDrivenData ? classifiedScheduleBoxes : classifiedManifestBoxes
+  const visibleGranularCubes = useMemo(
+    () => classifiedGranularCubes.filter((item) => item.visualState !== 'past'),
+    [classifiedGranularCubes],
+  )
+  const interactiveBoxes = useMemo(
+    () => enrichBoxInteractions(renderBoxes),
+    [renderBoxes],
+  )
+  const interactiveGranularCubes = useMemo(
+    () => enrichCubeInteractions(visibleGranularCubes),
+    [visibleGranularCubes],
+  )
+  const activeRenderItems = useGranularMode ? interactiveGranularCubes : interactiveBoxes
+  const reverseCount = activeRenderItems
+    .filter((item) => item.visualState === 'reverse')
+    .length
+  const trackedSlots = activeRenderItems
+    .filter((item) => item.visualState !== 'past')
+    .length
+  const currentStopBoxes = activeRenderItems
+    .filter((item) => item.visualState === 'current')
+    .length
+  const expectedCurrentDeliveries = useMemo(() => {
+    const currentStop = routeStops?.[effectiveActiveStopIndex]
+    if (!currentStop) return 0
+    const currentCargo = Array.isArray(currentStop?.cargo) ? currentStop.cargo : []
+    return currentCargo.filter((item) => !isReverseCargoType(item)).length
+  }, [routeStops, effectiveActiveStopIndex])
   const shouldAnimateTransition = progressAction === 'process' && processTransitionTrigger > 0
+  const hoverSummary = useMemo(() => {
+    if (!hoveredPayload) return null
+    const hoveredStopIndex = Number(hoveredPayload?.stopIndex ?? hoveredPayload?.stop_index ?? -1)
+    const hoveredStop = hoveredStopIndex >= 0 ? routeStops?.[hoveredStopIndex] : null
+    const stopName = hoveredStop?.location?.address
+      ?? hoveredStop?.address
+      ?? `Stop ${hoveredStopIndex + 1}`
+    return {
+      kicker: 'Stop Active',
+      headline: hoveredPayload.actionLabel,
+      detail: `${hoveredPayload.productType} • ${hoveredPayload.quantityLabel}`,
+      secondaryDetail: `Stop #${Math.max(1, hoveredStopIndex + 1)} • ${hoveredPayload.weightLabel} • ${hoveredPayload.volumeLabel}`,
+      instruction: hoveredPayload.unloadInstruction,
+      stopIndex: hoveredStopIndex,
+      stopName,
+    }
+  }, [hoveredPayload, routeStops])
+
+  const handleHoverChange = (payload) => {
+    setHoveredPayload(payload ?? null)
+  }
+
+  useEffect(() => {
+    onTrackedSlotsChange?.(trackedSlots)
+  }, [trackedSlots, onTrackedSlotsChange])
+
+  useEffect(() => {
+    setHoveredPayload((prev) => {
+      if (!prev) return null
+      const refreshed = activeRenderItems.find((item) => item.hoverId === prev.hoverId)
+      return refreshed ?? null
+    })
+  }, [activeRenderItems, useGranularMode])
+
+  useEffect(() => {
+    if (!hoverSummary) {
+      onHighlightReasonChange?.('')
+      return
+    }
+    const sequence = (hoverSummary.stopIndex ?? 0) + 1
+    onHighlightReasonChange?.(
+      `Optimal discharge sequence for Stop #${sequence}: ${hoverSummary.stopName}. Highlighted load aligns with side-curtain unloading order.`,
+    )
+  }, [hoverSummary, onHighlightReasonChange])
+
+  useEffect(() => {
+    if (currentStopBoxes !== expectedCurrentDeliveries) {
+      console.warn('3D/current stop count mismatch', {
+        currentStopBoxes,
+        expectedCurrentDeliveries,
+        activeStop: effectiveActiveStopIndex + 1,
+      })
+    }
+  }, [currentStopBoxes, expectedCurrentDeliveries, effectiveActiveStopIndex])
 
   useEffect(() => {
     const previousManifest = previousManifestRef.current ?? []
-    const nextManifest = truckLoadManifest ?? []
+    const nextManifest = renderBoxes ?? []
 
     if (shouldAnimateTransition) {
       const previousById = new Map(previousManifest.map((item) => [item.id, item]))
-      const poofItems = nextManifest
-        .filter((item) => item.type === 'returnable' && previousById.get(item.id)?.type === 'active')
+      const poofItems = renderBoxes
+        .filter((item) => item.visualState === 'reverse' && previousById.get(item.id)?.visualState === 'current')
         .map((item) => previousById.get(item.id))
         .filter(Boolean)
       setFadingBoxes(poofItems)
@@ -513,45 +1020,50 @@ export default function TruckCargo3D({
     previousManifestRef.current = nextManifest
     setFadingBoxes([])
     return () => {}
-  }, [truckLoadManifest, shouldAnimateTransition])
+  }, [renderBoxes, shouldAnimateTransition])
 
   return (
-    <div className="truck-cargo-canvas volumetric-cargo-canvas" aria-label="Volumetric 3D truck cargo viewer">
+    <div
+      className="truck-cargo-canvas volumetric-cargo-canvas"
+      aria-label="Volumetric 3D truck cargo viewer"
+      style={{ position: 'relative' }}
+    >
       <Canvas
         key={selectedStopKey}
         shadows
-        camera={{ position: [7.1, 6.4, 8.1], fov: 43, near: 0.1, far: 120 }}
+        camera={{ position: [-5.7, 7.1, 5.9], fov: 35, near: 0.1, far: 120 }}
         gl={{ antialias: true, alpha: true }}
       >
-        <CargoScene
-          boxes={truckLoadManifest}
-          fadingBoxes={fadingBoxes}
-          enableTransition={shouldAnimateTransition}
-          animateToken={processTransitionTrigger}
-        />
+        {useGranularMode ? (
+          <GranularCubeScene
+            cubes={interactiveGranularCubes}
+            cubeGrid={granularPayload.cubeGrid}
+            activeStopIndex={effectiveActiveStopIndex}
+            hoveredId={hoveredPayload?.hoverId ?? null}
+            selectedStopIndex={selectedStopIndex}
+            onHoverChange={handleHoverChange}
+          />
+        ) : (
+          <CargoScene
+            boxes={interactiveBoxes}
+            fadingBoxes={fadingBoxes}
+            enableTransition={shouldAnimateTransition}
+            animateToken={processTransitionTrigger}
+            hoveredId={hoveredPayload?.hoverId ?? null}
+            selectedStopIndex={selectedStopIndex}
+            onHoverChange={handleHoverChange}
+          />
+        )}
       </Canvas>
-      <div className="truck-compass" aria-label="Viewer orientation compass">
-        <span className="truck-compass-front">FRONT</span>
-        <span className="truck-compass-axis" />
-        <span className="truck-compass-rear">REAR</span>
-      </div>
-      <div className="truck-visual-legend" aria-label="Truck slot legend">
-        <div className="legend-item">
-          <span className="legend-swatch legend-swatch-active" />
-          <span>Blue: Active stop delivery</span>
-        </div>
-        <div className="legend-item">
-          <span className="legend-swatch legend-swatch-future" />
-          <span>Gray: Future delivery</span>
-        </div>
-        <div className="legend-item">
-          <span className="legend-swatch legend-swatch-return" />
-          <span>Striped: Reverse logistics returnables</span>
-        </div>
-        <div className="legend-item">
-          <span className="legend-swatch legend-swatch-empty" />
-          <span>Reverse buffers live: {reverseCount}</span>
-        </div>
+      <div
+        className="active-pallet-label"
+        style={{ position: 'absolute', top: 18, right: 18, zIndex: 5, pointerEvents: 'none' }}
+      >
+        <p className="active-pallet-kicker">{hoverSummary?.kicker ?? 'Stop Active'}</p>
+        <strong>{hoverSummary?.headline ?? `${expectedCurrentDeliveries} units to unload`}</strong>
+        {hoverSummary?.detail ? <p>{hoverSummary.detail}</p> : null}
+        {hoverSummary?.secondaryDetail ? <p>{hoverSummary.secondaryDetail}</p> : null}
+        {hoverSummary?.instruction ? <p>{hoverSummary.instruction}</p> : null}
       </div>
     </div>
   )
