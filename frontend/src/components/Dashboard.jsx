@@ -3,9 +3,12 @@ import { useAuth } from '../context/AuthContext'
 import { subscribeToRoute, markStopDelivered } from '../firebase'
 import { useDriverLocation } from '../hooks/useDriverLocation'
 import RouteMap from './Map'
+import TruckView from './TruckView'
 import TruckStopDrawer from './TruckStopDrawer'
 import VoiceAssistant from './VoiceAssistant'
 import mockRoute from '@shared/mock_5_stops.json'
+
+const FALLBACK_MOCK_ROUTE = { truckId: null, stops: [] }
 
 function buildGoogleMapsUrl(points) {
   if (!points || points.length < 2) return '#'
@@ -18,17 +21,20 @@ function buildGoogleMapsUrl(points) {
 
 export default function Dashboard() {
   const FORCE_MOCK_ROUTE = true
+  const fallbackMockRoute = mockRoute ?? FALLBACK_MOCK_ROUTE
   const { driverId, logout } = useAuth()
   const [route, setRoute] = useState(null)
   const [deliveryStatus, setDeliveryStatus] = useState(null)
   const [selectedStop, setSelectedStop] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [showTruck, setShowTruck] = useState(false)
   const { location: currentLocation } = useDriverLocation(driverId)
+  const activeTruckRoute = route ?? fallbackMockRoute
 
   useEffect(() => {
     if (FORCE_MOCK_ROUTE) {
       setRoute(null)
-      setDeliveryStatus(mockRoute?.stops?.map((stop) => stop?.status ?? 'pending') ?? [])
+      setDeliveryStatus(fallbackMockRoute.stops.map((stop) => stop?.status ?? 'pending'))
       setLoading(false)
       return () => {}
     }
@@ -58,7 +64,7 @@ export default function Dashboard() {
       setLoading(false)
       setSelectedStop((prev) => {
         if (!prev) return null
-        const nextStops = data?.stops ?? data?.points ?? mockRoute?.stops ?? []
+        const nextStops = data?.stops ?? data?.points ?? fallbackMockRoute.stops
         return nextStops[prev.index] ? prev : null
       })
       if (data) {
@@ -94,7 +100,7 @@ export default function Dashboard() {
             },
             cargo: route?.stops?.[index]?.cargo ?? route?.stop_data?.[index]?.cargo ?? route?.stopSnapshots?.[index]?.cargo ?? [],
           }))
-        : mockRoute.stops
+        : fallbackMockRoute.stops
 
     const points = unifiedStops.map((stop, index) => ({
       lat: stop?.location?.lat,
@@ -106,7 +112,7 @@ export default function Dashboard() {
     const normalizedStatus = deliveryStatus ?? route?.delivery_status ?? fallbackStatus
 
     return {
-      truckId: route?.truck_id ?? route?.truckId ?? mockRoute?.truckId ?? null,
+      truckId: route?.truck_id ?? route?.truckId ?? fallbackMockRoute.truckId ?? null,
       points,
       stops: unifiedStops,
       deliveryStatus: normalizedStatus,
@@ -116,7 +122,7 @@ export default function Dashboard() {
         unifiedStops.map((stop) => stop?.serviceMinutes ?? null),
       isMock: !route,
     }
-  }, [route, deliveryStatus])
+  }, [route, deliveryStatus, fallbackMockRoute])
 
   function canToggle(index) {
     const statusArray = normalizedRoute.deliveryStatus ?? []
@@ -171,7 +177,7 @@ export default function Dashboard() {
       routeStops: normalizedRoute?.stops ?? [],
       routePoints: normalizedRoute?.points ?? [],
       stopData: mergedStopData,
-      routeContext: route ?? mockRoute ?? null,
+      routeContext: route ?? fallbackMockRoute,
     })
   }
 
@@ -252,6 +258,11 @@ export default function Dashboard() {
 
           {normalizedRoute.points.length > 0 && (
             <div className="sidebar-footer">
+              {(activeTruckRoute?.cubes || activeTruckRoute?.pallets) && (
+                <button className="btn-truck-view" onClick={() => setShowTruck(true)}>
+                  View truck interior
+                </button>
+              )}
               <a
                 className="btn-gmaps"
                 href={buildGoogleMapsUrl(normalizedRoute.points)}
@@ -263,6 +274,20 @@ export default function Dashboard() {
             </div>
           )}
         </aside>
+
+        {showTruck && (activeTruckRoute?.cubes || activeTruckRoute?.pallets) && (
+          <TruckView
+            layout={activeTruckRoute?.truck_layout}
+            cubes={activeTruckRoute?.cubes}
+            cubeGrid={activeTruckRoute?.cube_grid}
+            pallets={activeTruckRoute?.pallets}
+            deliveries={activeTruckRoute?.deliveries}
+            deliveryStatus={normalizedRoute.deliveryStatus}
+            points={activeTruckRoute?.points ?? normalizedRoute.points}
+            truckId={activeTruckRoute?.truck_id ?? normalizedRoute.truckId}
+            onClose={() => setShowTruck(false)}
+          />
+        )}
 
         <main className="map-container">
           {loading ? (

@@ -34,7 +34,10 @@ for driver in data["drivers"]:
     db.collection("routes").document(driver_id).set({
         "driver_id": driver_id,
         "truck_id": driver["truck_id"],
+        "truck_layout": driver["truck_layout"],
         "points": driver["points"],
+        "pallets": driver["pallets"],
+        "deliveries": driver["deliveries"],
         "windows": driver["windows"],
         "service_times": driver["service_times"],
         "delivery_status": ["pending"] * len(driver["points"]),

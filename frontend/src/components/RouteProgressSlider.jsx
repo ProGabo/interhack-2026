@@ -36,7 +36,7 @@ export default function RouteProgressSlider({
         </button>
       </div>
       <p className="route-progress-caption">
-        Slide or process each stop to swap delivered pallets into reverse-logistics return slots.
+        Process each stop to convert delivered blue loads into eco-green return recovery slots without losing side access.
       </p>
     </section>
   )

@@ -9,9 +9,9 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
-    autoDeploy: true           # redeploy on every push to the main branch
+    autoDeploy: true
     envVars:
       - key: MPLBACKEND
-        value: Agg             # never try to open a window on a headless box
+        value: Agg
       - key: PYTHONUNBUFFERED
         value: "1"

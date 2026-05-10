@@ -526,6 +526,16 @@ export function computeAccessibilityIndex({
   return Math.round((edgeActive / activeSlots.length) * 100)
 }
 
+export function computeReturnableSpaceReuse({
+  manifest = { slots: [] },
+} = {}) {
+  const slots = Array.isArray(manifest?.slots) ? manifest.slots : []
+  const inUseSlots = slots.filter((slot) => slot.status !== 'empty')
+  if (inUseSlots.length === 0) return 0
+  const returnAssigned = inUseSlots.filter((slot) => slot.status === 'return_assigned').length
+  return Math.round((returnAssigned / inUseSlots.length) * 100)
+}
+
 export function buildTruckStatusHeatmap({
   manifest = { slots: [], maxRow: 0, maxCol: 0 },
 } = {}) {
