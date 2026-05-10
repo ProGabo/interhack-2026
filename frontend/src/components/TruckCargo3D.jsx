@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { Canvas } from '@react-three/fiber'
 import { Edges, Html, OrbitControls } from '@react-three/drei'
@@ -112,18 +112,62 @@ function ItemMesh({ item, grid }) {
   )
 }
 
-function Wheel({ position, radius = 0.34, wheelWidth = 0.24 }) {
+function getGridFootprint() {
+  const width = GRID_COLUMNS * CELL.x + (GRID_COLUMNS - 1) * GAP.x
+  const length = GRID_LENGTH * CELL.z + (GRID_LENGTH - 1) * GAP.z
+  const maxHeight = GRID_LAYERS * CELL.y + (GRID_LAYERS - 1) * GAP.y
+  return { width, length, maxHeight }
+}
+
+function getBoxWorldPosition(item) {
+  const { width, length } = getGridFootprint()
+  const gridX = Number(item?.x ?? 0)
+  const gridY = Number(item?.y ?? 0)
+  const gridZ = Number(item?.z ?? 0)
+  const sizeX = Number(item?.width ?? 1)
+  const sizeY = Number(item?.height ?? 1)
+  const sizeZ = Number(item?.depth ?? 1)
+  const totalX = sizeX * CELL.x + (sizeX - 1) * GAP.x
+  const totalY = sizeY * CELL.y + (sizeY - 1) * GAP.y
+  const totalZ = sizeZ * CELL.z + (sizeZ - 1) * GAP.z
+
+  const originX = -(width / 2) + (CELL.x / 2)
+  const originZ = -(length / 2) + (CELL.z / 2)
+  const x = originX + gridX * (CELL.x + GAP.x)
+  const y = BED_CLEARANCE + BED_THICKNESS + (totalY / 2) + (gridY * (CELL.y + GAP.y))
+  const z = originZ + gridZ * (CELL.z + GAP.z)
+
+  return { x, y, z, totalX, totalY, totalZ }
+}
+
+function getMiniCubePosition(cube, dim) {
+  const { width, length } = getGridFootprint()
+  const safeL = Math.max(1, Number(dim?.L ?? 1))
+  const safeW = Math.max(1, Number(dim?.W ?? 1))
+  const safeH = Math.max(1, Number(dim?.H ?? 1))
+  const unitX = width / safeL
+  const unitZ = length / safeW
+  const unitY = Math.max(0.26, (Math.min(unitX, unitZ) * MINI_CUBE_SCALE) / safeH)
+  const offsetX = -(width / 2) + unitX / 2
+  const offsetZ = -(length / 2) + unitZ / 2
+  const sx = Math.max(0.28, unitX * 0.95)
+  const sz = Math.max(0.24, unitZ * 0.9)
+  return {
+    x: offsetX + Number(cube?.x ?? 0) * unitX,
+    y: BED_CLEARANCE + BED_THICKNESS + unitY / 2 + Number(cube?.z ?? 0) * (unitY * 0.92),
+    z: offsetZ + Number(cube?.y ?? 0) * unitZ,
+    sx,
+    sy: unitY,
+    sz,
+  }
+}
+
+function Wheel({ position, scale = [1, 1, 1] }) {
   return (
-    <group position={position} rotation={[Math.PI / 2, 0, 0]}>
-      <mesh castShadow receiveShadow>
-        <cylinderGeometry args={[radius, radius, wheelWidth, 28]} />
-        <meshStandardMaterial color="#111111" metalness={0.08} roughness={0.85} />
-      </mesh>
-      <mesh>
-        <cylinderGeometry args={[radius * 0.52, radius * 0.52, wheelWidth + 0.02, 24]} />
-        <meshStandardMaterial color="#9ca3af" metalness={0.45} roughness={0.35} />
-      </mesh>
-    </group>
+    <mesh position={position} scale={scale} rotation={[Math.PI / 2, 0, 0]} castShadow receiveShadow>
+      <cylinderGeometry args={[0.34, 0.34, 0.24, 28]} />
+      <meshStandardMaterial color="#0f172a" metalness={0.22} roughness={0.78} />
+    </mesh>
   )
 }
 
@@ -246,6 +290,7 @@ function CargoScene({ items, grid }) {
       </mesh>
 
       <OrbitControls
+        makeDefault
         enablePan={false}
         minDistance={4.2}
         maxDistance={22}
@@ -276,7 +321,11 @@ export default function TruckCargo3D({
   }
 
   return (
-    <div className="truck-cargo-canvas">
+    <div
+      className="truck-cargo-canvas volumetric-cargo-canvas"
+      aria-label="Volumetric 3D truck cargo viewer"
+      style={{ position: 'relative' }}
+    >
       <Canvas
         key={sceneKey}
         shadows
@@ -285,6 +334,18 @@ export default function TruckCargo3D({
       >
         <CargoScene items={safeItems} grid={grid} />
       </Canvas>
+      <div
+        className="active-pallet-label"
+        style={{ position: 'absolute', top: 18, right: 18, zIndex: 5, pointerEvents: 'none' }}
+      >
+        <p className="active-pallet-kicker">{hoverSummary?.kicker ?? 'Stop Active'}</p>
+        <strong>{hoverSummary?.headline ?? `${expectedCurrentDeliveries} units to unload`}</strong>
+        {hoverSummary?.detail ? <p>{hoverSummary.detail}</p> : null}
+        {hoverSummary?.secondaryDetail ? <p>{hoverSummary.secondaryDetail}</p> : null}
+        {hoverSummary?.instruction ? <p>{hoverSummary.instruction}</p> : null}
+      </div>
     </div>
   )
 }
+
+export { classifyVisualState, buildTruckLoadManifest, normalizeRenderableBoxes }
