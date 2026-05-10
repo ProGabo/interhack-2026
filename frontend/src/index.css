@@ -962,6 +962,15 @@ body {
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(2, 6, 23, 0.75));
 }
 
+.truck-cargo-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+}
+
 .truck-slot-badge-wrap {
   pointer-events: none;
   display: flex;

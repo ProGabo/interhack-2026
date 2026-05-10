@@ -1,136 +1,115 @@
 import { useMemo, useState } from 'react'
 import * as THREE from 'three'
 import { Canvas } from '@react-three/fiber'
-import { Html, OrbitControls } from '@react-three/drei'
-import mockRoute from '@shared/mock_5_stops.json'
+import { Edges, Html, OrbitControls } from '@react-three/drei'
 
-const SLOT_STYLES = {
+/* The truck is rendered from the route doc's `items` (3D anchored boxes) plus
+   `item_grid` ({L, W, H}) — the same format as backend/firestore_writer.py.
+   Lattice axes:
+     x ∈ [0, L)  truck length (cab at -X)
+     y ∈ [0, W)  truck width
+     z ∈ [0, H)  vertical stacking
+   Each item carries `position {x,y,z}` (anchor / min corner), `shape
+   {w_x, w_y, w_z}` (cells), and a `type` tagged by the caller for color
+   coding (target_unload / full / empty_return). */
+
+// Lattice cells are 0.4 m in the backend; CELL is its on-screen size. We use
+// a slightly enlarged value to keep the truck visually substantial in the
+// drawer without distorting proportions.
+const CELL = 0.5
+const CELL_GAP = 0.02
+const FLOOR_Y = 0
+
+const TYPE_STYLES = {
   target_unload: {
     fill: '#facc15',
-    border: '#facc15',
+    edge: '#fde047',
     emissive: '#f59e0b',
-    emissiveIntensity: 0.45,
-    transparent: false,
-    opacity: 1,
-    wireframe: false,
+    emissiveIntensity: 0.4,
     label: 'UNLOAD NOW',
   },
   full: {
     fill: '#3b82f6',
-    border: '#60a5fa',
+    edge: '#60a5fa',
     emissive: '#1d4ed8',
     emissiveIntensity: 0.08,
-    transparent: true,
-    opacity: 0.7,
-    wireframe: false,
     label: 'NEXT STOP',
-  },
-  free: {
-    fill: '#93c5fd',
-    border: '#7dd3fc',
-    emissive: '#0f172a',
-    emissiveIntensity: 0,
-    transparent: true,
-    opacity: 0.15,
-    wireframe: true,
-    label: 'FREE SPOT',
   },
   empty_return: {
     fill: '#4b5563',
-    border: '#9ca3af',
+    edge: '#9ca3af',
     emissive: '#111827',
     emissiveIntensity: 0.05,
-    transparent: false,
-    opacity: 1,
-    wireframe: false,
     label: 'EMPTY RETURN',
   },
 }
+const RETURNABLE_EDGE = '#F5C24D'
 
-const SLOT_SIZE = [1.55, 0.9, 1.05]
-const SLOT_GAP = { x: 0.32, z: 0.4 }
-
-function getSlotStyle(type) {
-  return SLOT_STYLES[type] ?? SLOT_STYLES.full
+function styleFor(type) {
+  return TYPE_STYLES[type] ?? TYPE_STYLES.full
 }
 
-function buildFallbackMatrix() {
-  return Array.from({ length: 2 }, (_, rowIndex) =>
-    Array.from({ length: 4 }, (_, colIndex) => ({
-      id: `fallback-${rowIndex}-${colIndex}`,
-      row: rowIndex,
-      col: colIndex,
-      type: 'free',
-      product: null,
-    })),
+/* Cell index → world coord. The lattice is centered around 0; an item with
+   shape (w_x, w_y, w_z) anchored at (x, y, z) has its centroid at
+   (x + (w_x-1)/2 - (L-1)/2). Y (vertical) starts on the floor instead of
+   centering, so item z=0 sits flush. */
+function cellCenter(anchor, shape, grid) {
+  const { x, y, z } = anchor
+  const { w_x, w_y, w_z } = shape
+  const xWorld = (x + (w_x - 1) / 2 - (grid.L - 1) / 2) * CELL
+  const zWorld = (y + (w_y - 1) / 2 - (grid.W - 1) / 2) * CELL
+  const yWorld = FLOOR_Y + ((w_z - 1) / 2 + z) * (CELL + CELL_GAP) + (CELL + CELL_GAP) / 2
+  return [xWorld, yWorld, zWorld]
+}
+
+function ItemMesh({ item, grid }) {
+  const [hovered, setHovered] = useState(false)
+  const style = styleFor(item.type)
+  const w_x = item.shape?.w_x ?? 1
+  const w_y = item.shape?.w_y ?? 1
+  const w_z = item.shape?.w_z ?? 1
+
+  const sx = w_x * CELL + (w_x - 1) * (-CELL_GAP * 0.0)
+  const sz = w_y * CELL + (w_y - 1) * (-CELL_GAP * 0.0)
+  const sy = w_z * (CELL + CELL_GAP) - CELL_GAP
+
+  const center = cellCenter(item.position ?? { x: 0, y: 0, z: 0 }, item.shape ?? { w_x: 1, w_y: 1, w_z: 1 }, grid)
+
+  const edgeColor = item.is_returnable ? RETURNABLE_EDGE : style.edge
+
+  return (
+    <mesh
+      castShadow
+      receiveShadow
+      position={center}
+      onPointerOver={(e) => { e.stopPropagation(); setHovered(true) }}
+      onPointerOut={() => setHovered(false)}
+    >
+      <boxGeometry args={[sx - CELL_GAP, sy, sz - CELL_GAP]} />
+      <meshStandardMaterial
+        color={style.fill}
+        emissive={style.emissive}
+        emissiveIntensity={style.emissiveIntensity}
+        metalness={0.15}
+        roughness={0.45}
+      />
+      <Edges scale={1.001} color={edgeColor} />
+      {hovered && (
+        <Html distanceFactor={9.5} center position={[0, sy / 2 + 0.18, 0]} zIndexRange={[20, 0]}>
+          <div className="truck-slot-badge-wrap">
+            <div className="truck-slot-badge" style={{ borderColor: style.edge }}>
+              <p className="truck-slot-badge-title">
+                {style.label}{item.is_returnable ? ' · RET' : ''}
+              </p>
+              <p className="truck-slot-badge-product">
+                {item.product_id ?? 'Unknown'} · {w_x}×{w_y}×{w_z}
+              </p>
+            </div>
+          </div>
+        </Html>
+      )}
+    </mesh>
   )
-}
-
-function matrixFromPallets(pallets) {
-  if (!Array.isArray(pallets) || pallets.length === 0) {
-    return buildFallbackMatrix()
-  }
-
-  const rows = Math.max(2, ...pallets.map((pallet) => Number(pallet?.row ?? pallet?.z ?? 0) + 1))
-  const cols = Math.max(4, ...pallets.map((pallet) => Number(pallet?.col ?? pallet?.x ?? 0) + 1))
-  const matrix = Array.from({ length: rows }, (_, rowIndex) =>
-    Array.from({ length: cols }, (_, colIndex) => ({
-      id: `slot-${rowIndex}-${colIndex}`,
-      row: rowIndex,
-      col: colIndex,
-      type: 'free',
-      product: null,
-    })),
-  )
-
-  pallets.forEach((pallet, index) => {
-    const row = Math.max(0, Number(pallet?.row ?? pallet?.z ?? Math.floor(index / cols)))
-    const col = Math.max(0, Number(pallet?.col ?? pallet?.x ?? (index % cols)))
-    if (!matrix[row]?.[col]) return
-    matrix[row][col] = {
-      ...matrix[row][col],
-      id: pallet?.id ?? `pallet-${index + 1}`,
-      type: pallet?.type ?? 'full',
-      product: pallet?.product ?? pallet?.label ?? null,
-    }
-  })
-
-  return matrix
-}
-
-function normalizeCargoItems(cargo) {
-  if (!Array.isArray(cargo)) return []
-  return cargo.map((item, index) => ({
-    ...item,
-    row: Number(item?.position?.row ?? item?.row ?? item?.z ?? Math.floor(index / 4)),
-    col: Number(item?.position?.col ?? item?.col ?? item?.x ?? (index % 4)),
-    product: item?.product ?? item?.label ?? null,
-    type: item?.type ?? 'full',
-  }))
-}
-
-function normalizeMatrix(rawMatrix) {
-  if (!Array.isArray(rawMatrix) || rawMatrix.length === 0) {
-    return buildFallbackMatrix()
-  }
-
-  const colCount = Math.max(
-    1,
-    rawMatrix.reduce((maxCols, row) => Math.max(maxCols, Array.isArray(row) ? row.length : 0), 0),
-  )
-
-  return rawMatrix.map((row, rowIndex) => {
-    const safeRow = Array.isArray(row) ? row : []
-    return Array.from({ length: colCount }, (_, colIndex) => {
-      const slot = safeRow[colIndex]
-      return {
-        ...slot,
-        id: slot?.id ?? `slot-${rowIndex}-${colIndex}`,
-        type: slot?.type ?? 'free',
-        product: slot?.product ?? slot?.label ?? null,
-      }
-    })
-  })
 }
 
 function Wheel({ position, radius = 0.34, wheelWidth = 0.24 }) {
@@ -148,59 +127,62 @@ function Wheel({ position, radius = 0.34, wheelWidth = 0.24 }) {
   )
 }
 
-function TruckFrame({ width, depth }) {
-  const frameHeight = 1.2
-  const cabWidth = THREE.MathUtils.clamp(depth * 0.8, 2, 3.3)
-  const cabFrontX = -(width / 2 + 1.45)
-  const cargoDeckLength = width + 1.15
-  const cargoDeckHalfLength = cargoDeckLength / 2
-  const cabBodyLength = 1.62
-  const cabFrontOverhang = Math.max(0, Math.abs(cabFrontX) + cabBodyLength / 2 - cargoDeckHalfLength)
-  const chassisLength = cargoDeckLength + cabFrontOverhang
-  const chassisCenterX = -cabFrontOverhang / 2
-  const wheelTrack = depth + 1
+/* `length` runs along world X (truck length, cab at -X), `width` runs along
+   world Z, `height` along Y. Sized to fit the lattice exactly. */
+function TruckFrame({ length, width, height }) {
+  const frameHeight = Math.max(1.0, height)
+  const cabWidth = THREE.MathUtils.clamp(width * 0.85, 1.6, 3.3)
+  const cabFrontX = -(length / 2 + 1.45)
+  const chassisLength = length + 1.6
+  const chassisCenterX = (cabFrontX + length / 2) / 2
+  const wheelTrack = width + 1
   const frontAxleX = cabFrontX + 0.15
-  const rearAxle1X = width * 0.14
-  const rearAxle2X = width * 0.36
+  const rearAxle1X = length * 0.14
+  const rearAxle2X = length * 0.36
 
   return (
     <group>
-      <mesh receiveShadow position={[0, -0.62, 0]}>
-        <boxGeometry args={[width + 1.15, 0.15, depth + 1.05]} />
+      {/* Chassis under the cargo */}
+      <mesh receiveShadow position={[0, FLOOR_Y - 0.62, 0]}>
+        <boxGeometry args={[length + 1.15, 0.15, width + 1.05]} />
         <meshStandardMaterial color="#111827" metalness={0.2} roughness={0.8} />
       </mesh>
-
-      <mesh receiveShadow position={[chassisCenterX, -0.88, 0]}>
-        <boxGeometry args={[chassisLength, 0.22, depth + 1.05]} />
+      <mesh receiveShadow position={[chassisCenterX, FLOOR_Y - 0.88, 0]}>
+        <boxGeometry args={[chassisLength, 0.22, width + 1.05]} />
         <meshStandardMaterial color="#1f2937" metalness={0.35} roughness={0.45} />
       </mesh>
 
-      <mesh position={[0, 0.24, -(depth / 2 + 0.52)]}>
-        <boxGeometry args={[width + 1.05, frameHeight, 0.08]} />
-        <meshStandardMaterial color="#9ca3af" metalness={0.2} roughness={0.55} />
+      {/* Cargo box walls (long sides only — back and front stay open so we
+          can see the lattice). */}
+      <mesh position={[0, FLOOR_Y + frameHeight / 2, -(width / 2 + 0.06)]}>
+        <boxGeometry args={[length + 0.1, frameHeight, 0.05]} />
+        <meshStandardMaterial color="#9ca3af" metalness={0.2} roughness={0.55} transparent opacity={0.35} />
+      </mesh>
+      <mesh position={[0, FLOOR_Y + frameHeight / 2, width / 2 + 0.06]}>
+        <boxGeometry args={[length + 0.1, frameHeight, 0.05]} />
+        <meshStandardMaterial color="#9ca3af" metalness={0.2} roughness={0.55} transparent opacity={0.35} />
+      </mesh>
+      {/* Roof outline (wireframe so items inside remain visible) */}
+      <mesh position={[0, FLOOR_Y + frameHeight, 0]}>
+        <boxGeometry args={[length + 0.1, 0.05, width + 0.1]} />
+        <meshStandardMaterial color="#475569" transparent opacity={0.15} />
+        <Edges color="#64748b" />
       </mesh>
 
-      <mesh position={[0, 0.24, depth / 2 + 0.52]}>
-        <boxGeometry args={[width + 1.05, frameHeight, 0.08]} />
-        <meshStandardMaterial color="#9ca3af" metalness={0.2} roughness={0.55} />
-      </mesh>
-
-      <group position={[cabFrontX, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
+      {/* Cab */}
+      <group position={[cabFrontX, FLOOR_Y, 0]} rotation={[0, Math.PI / 2, 0]}>
         <mesh castShadow receiveShadow position={[0.28, -0.22, 0]}>
           <boxGeometry args={[cabWidth + 0.42, 0.34, 1.62]} />
           <meshStandardMaterial color="#374151" metalness={0.3} roughness={0.48} />
         </mesh>
-
         <mesh castShadow receiveShadow position={[0, -0.18, 0]}>
           <boxGeometry args={[cabWidth, 0.72, 1.5]} />
           <meshStandardMaterial color="#1f2937" metalness={0.25} roughness={0.5} />
         </mesh>
-
         <mesh castShadow receiveShadow position={[0, 0.27, 0.16]}>
           <boxGeometry args={[cabWidth * 0.9, 0.62, 1.02]} />
           <meshStandardMaterial color="#334155" metalness={0.22} roughness={0.48} />
         </mesh>
-
         <mesh position={[0, 0.34, -0.33]}>
           <boxGeometry args={[cabWidth * 0.84, 0.36, 0.08]} />
           <meshStandardMaterial
@@ -213,83 +195,31 @@ function TruckFrame({ width, depth }) {
             opacity={0.7}
           />
         </mesh>
-
-        <mesh castShadow receiveShadow position={[-0.52, -0.36, -0.01]}>
-          <boxGeometry args={[0.06, 0.14, cabWidth * 0.72]} />
-          <meshStandardMaterial color="#9ca3af" metalness={0.28} roughness={0.42} />
-        </mesh>
       </group>
 
-      <Wheel position={[frontAxleX, -1.16, wheelTrack / 2]} />
-      <Wheel position={[frontAxleX, -1.16, -wheelTrack / 2]} />
-      <Wheel position={[rearAxle1X, -1.16, wheelTrack / 2]} />
-      <Wheel position={[rearAxle1X, -1.16, -wheelTrack / 2]} />
-      <Wheel position={[rearAxle2X, -1.16, wheelTrack / 2]} />
-      <Wheel position={[rearAxle2X, -1.16, -wheelTrack / 2]} />
+      <Wheel position={[frontAxleX, FLOOR_Y - 1.16,  wheelTrack / 2]} />
+      <Wheel position={[frontAxleX, FLOOR_Y - 1.16, -wheelTrack / 2]} />
+      <Wheel position={[rearAxle1X, FLOOR_Y - 1.16,  wheelTrack / 2]} />
+      <Wheel position={[rearAxle1X, FLOOR_Y - 1.16, -wheelTrack / 2]} />
+      <Wheel position={[rearAxle2X, FLOOR_Y - 1.16,  wheelTrack / 2]} />
+      <Wheel position={[rearAxle2X, FLOOR_Y - 1.16, -wheelTrack / 2]} />
     </group>
   )
 }
 
-function SlotMesh({ slot, position }) {
-  const [isHovered, setIsHovered] = useState(false)
-  const style = getSlotStyle(slot?.type)
-  const productText = slot?.product ?? 'Free slot'
-  const showFullText = slot?.type === 'target_unload' || slot?.type === 'empty_return'
-
+function CargoFloor({ length, width }) {
   return (
-    <group position={position}>
-      <mesh
-        castShadow
-        receiveShadow
-        onPointerOver={() => setIsHovered(true)}
-        onPointerOut={() => setIsHovered(false)}
-      >
-        <boxGeometry args={SLOT_SIZE} />
-        <meshStandardMaterial
-          color={style.fill}
-          emissive={style.emissive}
-          emissiveIntensity={style.emissiveIntensity}
-          metalness={0.15}
-          roughness={0.45}
-          transparent={style.transparent}
-          opacity={style.opacity}
-          wireframe={style.wireframe}
-        />
-      </mesh>
-
-      <Html
-        transform
-        sprite
-        occlude
-        distanceFactor={9.5}
-        position={[0, SLOT_SIZE[1] / 2 + 0.28, 0]}
-        zIndexRange={[20, 0]}
-      >
-        <div className="truck-slot-badge-wrap">
-          {showFullText || isHovered ? (
-            <div className="truck-slot-badge" style={{ borderColor: style.border }}>
-              <p className="truck-slot-badge-title">{style.label}</p>
-              <p className="truck-slot-badge-product">{productText}</p>
-            </div>
-          ) : (
-            <div className="truck-slot-dot" style={{ backgroundColor: style.fill }} />
-          )}
-          <div className="truck-slot-line" />
-        </div>
-      </Html>
-    </group>
+    <mesh receiveShadow position={[0, FLOOR_Y - 0.005, 0]}>
+      <boxGeometry args={[length, 0.01, width]} />
+      <meshStandardMaterial color="#0f172a" roughness={0.9} />
+    </mesh>
   )
 }
 
-function TruckCargoScene({ matrix }) {
-  const rowCount = matrix?.length ?? 0
-  const colCount = matrix?.[0]?.length ?? 0
-  const stepX = SLOT_SIZE[0] + SLOT_GAP.x
-  const stepZ = SLOT_SIZE[2] + SLOT_GAP.z
-  const width = Math.max(0, (colCount - 1) * stepX + SLOT_SIZE[0])
-  const depth = Math.max(0, (rowCount - 1) * stepZ + SLOT_SIZE[2])
-  const baseX = -((colCount - 1) * stepX) / 2
-  const baseZ = -((rowCount - 1) * stepZ) / 2
+function CargoScene({ items, grid }) {
+  const length = grid.L * CELL
+  const width = grid.W * CELL
+  const height = grid.H * (CELL + CELL_GAP)
 
   return (
     <>
@@ -303,81 +233,57 @@ function TruckCargoScene({ matrix }) {
       />
       <directionalLight intensity={0.58} position={[-5, 3.8, -4.5]} />
 
-      <TruckFrame width={width} depth={depth} />
+      <TruckFrame length={length} width={width} height={height} />
+      <CargoFloor length={length} width={width} />
 
-      {matrix?.map((row, rowIndex) =>
-        row?.map((slot, colIndex) => (
-          <SlotMesh
-            key={`slot-${rowIndex}-${colIndex}-${slot?.type ?? 'free'}-${slot?.id ?? colIndex}`}
-            slot={slot ?? { type: 'free', product: null }}
-            position={[baseX + colIndex * stepX, 0, baseZ + rowIndex * stepZ]}
-          />
-        )),
-      )}
+      {items.map((item, i) => (
+        <ItemMesh key={item.id ?? i} item={item} grid={grid} />
+      ))}
 
-      <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.7, 0]}>
-        <planeGeometry args={[width + 3, depth + 3]} />
+      <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, FLOOR_Y - 0.7, 0]}>
+        <planeGeometry args={[length + 4, width + 4]} />
         <shadowMaterial opacity={0.22} />
       </mesh>
 
       <OrbitControls
         enablePan={false}
         minDistance={4.2}
-        maxDistance={18}
-        minPolarAngle={0.25}
+        maxDistance={22}
+        minPolarAngle={0.2}
         maxPolarAngle={Math.PI / 2}
-        target={[0, 0, 0]}
+        target={[0, height / 2, 0]}
       />
     </>
   )
 }
 
-export default function TruckCargo3D({ stopData, matrix, pallets, cargo, selectedStopId, selectedStopIndex }) {
-  const selectedMockStop =
-    mockRoute?.stops?.find((stop, index) => {
-      if (selectedStopId && (stop?.stopId === selectedStopId || stop?.id === selectedStopId)) {
-        return true
-      }
-      if (Number.isInteger(selectedStopIndex) && selectedStopIndex >= 0) {
-        return index === selectedStopIndex
-      }
-      return false
-    }) ?? mockRoute?.stops?.[0] ?? null
+export default function TruckCargo3D({
+  items,
+  itemGrid,
+  selectedStopId,
+  selectedStopIndex,
+}) {
+  const grid = itemGrid ?? null
+  const safeItems = useMemo(() => (Array.isArray(items) ? items : []), [items])
+  const sceneKey = selectedStopId ?? `stop-${selectedStopIndex ?? 0}`
 
-  const activeCargo = Array.isArray(cargo) && cargo.length > 0
-    ? cargo
-    : selectedMockStop?.cargo ?? []
-
-  const selectedStopKey = selectedStopId ?? selectedMockStop?.stopId ?? `stop-${selectedStopIndex ?? 0}`
-  const normalizedMatrix = useMemo(() => {
-    if (Array.isArray(activeCargo) && activeCargo.length > 0) {
-      return matrixFromPallets(normalizeCargoItems(activeCargo))
-    }
-
-    const stopMatrix = stopData?.matrix ?? stopData?.truck_state?.matrix
-    if (Array.isArray(stopMatrix) && stopMatrix.length > 0) {
-      return normalizeMatrix(stopMatrix)
-    }
-
-    if (Array.isArray(matrix) && matrix.length > 0) {
-      return normalizeMatrix(matrix)
-    }
-
-    const sourcePallets = stopData?.pallets ?? pallets ?? []
-    return matrixFromPallets(sourcePallets)
-  }, [stopData, matrix, pallets, activeCargo])
-
-  console.log('3D PROPS:', activeCargo)
+  if (!grid || safeItems.length === 0) {
+    return (
+      <div className="truck-cargo-canvas truck-cargo-empty">
+        <p>No cargo data for this stop.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="truck-cargo-canvas">
       <Canvas
-        key={selectedStopKey}
+        key={sceneKey}
         shadows
-        camera={{ position: [6.4, 5.8, 6.9], fov: 42, near: 0.1, far: 100 }}
+        camera={{ position: [grid.L * CELL * 0.9, grid.H * CELL * 1.6 + 2, grid.W * CELL * 1.4], fov: 38, near: 0.1, far: 100 }}
         gl={{ antialias: true, alpha: true }}
       >
-        <TruckCargoScene matrix={normalizedMatrix} />
+        <CargoScene items={safeItems} grid={grid} />
       </Canvas>
     </div>
   )

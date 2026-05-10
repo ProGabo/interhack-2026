@@ -27,6 +27,28 @@ function generateMockCubes(mockRoute) {
   return cubes
 }
 
+/* Tag each item with its lifecycle state relative to the currently-viewed stop:
+     • stop_index === currentStopIndex                  → target_unload
+     • stop_index >  currentStopIndex                   → full (still on truck)
+     • stop_index <  currentStopIndex && is_returnable  → empty_return
+     • stop_index <  currentStopIndex                   → dropped (already gone)
+   The 3D position/shape from the DB is preserved untouched — TruckCargo3D
+   renders items at their lattice coords. */
+function classifyItemsForStop(items, currentStopIndex) {
+  if (!Array.isArray(items) || items.length === 0) return []
+  const out = []
+  for (const item of items) {
+    const stop = item?.stop_index
+    let type
+    if (stop === currentStopIndex) type = 'target_unload'
+    else if (stop > currentStopIndex) type = 'full'
+    else if (item?.is_returnable) type = 'empty_return'
+    else continue
+    out.push({ ...item, type })
+  }
+  return out
+}
+
 function buildGoogleMapsUrl(points) {
   if (!points || points.length < 2) return '#'
   const origin = `${points[0].lat},${points[0].lng}`
@@ -168,10 +190,13 @@ export default function Dashboard() {
       route?.stop_data?.[index] ??
       route?.stopSnapshots?.[index] ??
       null
+    const classifiedItems = classifyItemsForStop(route?.items, index)
     const mergedStopData = {
       ...(legacyStop ?? {}),
       ...(unifiedStop ?? {}),
       cargo: unifiedStop?.cargo ?? legacyStop?.cargo ?? [],
+      items: classifiedItems,
+      itemGrid: route?.item_grid ?? null,
     }
     const point = normalizedRoute?.points?.[index]
     if (!point) {
