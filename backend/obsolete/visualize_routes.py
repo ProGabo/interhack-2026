@@ -16,9 +16,9 @@ import numpy as np
 import osmnx as ox
 import pyproj
 
-from clustering import Cluster, Depot, Stop, _matrix_for_problem, load_problem
+from backend.obsolete.clustering import Cluster, Depot, Stop, _matrix_for_problem, load_problem
 from graph_manager import _edge_colors, get_or_build_graph
-from route_sa import sa_optimize_clusters
+from backend.obsolete.route_sa import sa_optimize_clusters
 
 OUT_PATH = Path(__file__).with_name("routes.png")
 VAN_COLORS = ["#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf", "#e377c2"]
@@ -122,7 +122,7 @@ def visualize(
     stops_by_id = {s.id: s for s in stops}
     matrix = _matrix_for_problem(depot, stops)
 
-    from clustering import W_GEO, W_TMID, W_TWIDTH, _cluster_with_weights
+    from backend.obsolete.clustering import W_GEO, W_TMID, W_TWIDTH, _cluster_with_weights
     clusters = _cluster_with_weights(
         stops, depot, fleet, drivers, stops_by_id, matrix,
         W_GEO, W_TMID, W_TWIDTH,

@@ -19,7 +19,7 @@ import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from clustering import (
+from backend.obsolete.clustering import (
     Cluster, Depot, Driver, Fleet, Stop,
     cluster_request, grid_search, _format_cluster,
 )
@@ -260,7 +260,7 @@ if __name__ == "__main__":
         (wg, wm, ww), clusters, _ = grid_search(verbose=False)
         print(f"using grid-best weights w_geo={wg} w_tmid={wm} w_twidth={ww}")
         # rebuild ancillary state
-        from clustering import load_problem, _matrix_for_problem
+        from backend.obsolete.clustering import load_problem, _matrix_for_problem
         depot, fleet, drivers, stops = load_problem()
         stops_by_id = {s.id: s for s in stops}
         matrix = _matrix_for_problem(depot, stops)
